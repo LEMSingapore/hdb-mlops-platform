@@ -36,7 +36,7 @@ class ModelLoader:
         self._config = config
         self._lock = threading.Lock()
         self._model: PyFuncModel | None = None
-        self._current_version: str | None = None
+        self._current_version: int | None = None
         mlflow.set_tracking_uri(config.mlflow_tracking_uri)
         self._client = MlflowClient()
 
@@ -81,7 +81,7 @@ class ModelLoader:
                 raise RuntimeError("Model not yet loaded; startup may have failed.")
             return self._model
 
-    def get_version(self) -> str | None:
+    def get_version(self) -> int | None:
         """Return the version string of the currently loaded model."""
         with self._lock:
             return self._current_version
@@ -117,7 +117,7 @@ class ModelLoader:
             self._config.reload_interval_seconds,
         )
 
-    def _resolve_alias_version(self) -> str:
+    def _resolve_alias_version(self) -> int:
         """Return the model version currently pointed to by the configured alias."""
         mv = self._client.get_model_version_by_alias(
             self._config.model_name, self._config.model_alias

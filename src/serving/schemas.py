@@ -31,7 +31,7 @@ class PredictResponse(BaseModel):
     """Prediction result with model provenance."""
 
     predicted_resale_price: float
-    model_version: str
+    model_version: int
     model_alias: str
 
 
@@ -48,7 +48,7 @@ class HealthResponse(BaseModel):
 
     status: str
     model_loaded: bool
-    model_version: str | None
+    model_version: int | None
 
 
 class ModelInfoResponse(BaseModel):
@@ -56,5 +56,5 @@ class ModelInfoResponse(BaseModel):
 
     model_name: str
     model_alias: str
-    model_version: str | None
+    model_version: int | None
     run_id: str | None

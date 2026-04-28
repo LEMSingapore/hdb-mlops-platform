@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from serving.config import ServingConfig
@@ -88,6 +88,11 @@ async def predict(req: PredictRequest) -> PredictResponse:
     """
     model = loader.get_model()
     version = loader.get_version()
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model not loaded yet — try again shortly",
+        )
     df = _build_feature_dataframe(req)
     try:
         prediction = float(model.predict(df)[0])  # type: ignore[index]
@@ -97,7 +102,7 @@ async def predict(req: PredictRequest) -> PredictResponse:
 
     return PredictResponse(
         predicted_resale_price=round(prediction, 2),
-        model_version=version or "unknown",
+        model_version=version,
         model_alias=config.model_alias,
     )
 
