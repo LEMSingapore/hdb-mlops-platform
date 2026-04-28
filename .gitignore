@@ -35,3 +35,7 @@ mlartifacts/
 # Local model artefacts
 *.pkl
 *.joblib
+
+# MLflow local tracking store
+mlflow.db
+mlflow.db-journal
