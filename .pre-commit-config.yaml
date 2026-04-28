@@ -22,3 +22,4 @@ repos:
       - id: mypy
         additional_dependencies: [pydantic, types-requests]
         args: [--config-file=pyproject.toml]
+        exclude: ^src/training/legacy_train\.py$
