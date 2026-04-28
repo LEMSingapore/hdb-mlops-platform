@@ -74,7 +74,7 @@ class TestInitialLoad:
 
 class TestVersionTracking:
     def test_get_version_returns_expected_value_after_load(self, single_version_setup):
-        uri, version = single_version_setup
+        uri, _version = single_version_setup
         loader = ModelLoader(_make_config(uri))
         loader.load_initial()
         assert loader.get_version() is not None
@@ -108,7 +108,7 @@ class TestAtomicSwap:
         assert loader.get_model() is not None
 
     def test_reload_if_changed_is_no_op_when_alias_unchanged(self, single_version_setup):
-        uri, v1 = single_version_setup
+        uri, _v1 = single_version_setup
         loader = ModelLoader(_make_config(uri))
         loader.load_initial()
 
@@ -142,7 +142,7 @@ class TestAtomicSwap:
 
 class TestErrorResilience:
     def test_reload_retains_model_when_registry_call_fails(self, single_version_setup, monkeypatch):
-        uri, v1 = single_version_setup
+        uri, _v1 = single_version_setup
         loader = ModelLoader(_make_config(uri))
         loader.load_initial()
 
@@ -161,7 +161,7 @@ class TestErrorResilience:
         assert loader.get_model() is model_before
 
     def test_reload_retains_model_when_explainer_init_fails(self, two_version_setup, monkeypatch):
-        uri, v1, v2 = two_version_setup
+        uri, _v1, v2 = two_version_setup
         loader = ModelLoader(_make_config(uri))
         loader.load_initial()
 
@@ -209,7 +209,7 @@ class TestExplainerBundle:
         assert bundle.feature_names == expected_names
 
     def test_explainer_swaps_atomically_with_model_on_alias_change(self, two_version_setup):
-        uri, v1, v2 = two_version_setup
+        uri, _v1, v2 = two_version_setup
         loader = ModelLoader(_make_config(uri))
         loader.load_initial()
 

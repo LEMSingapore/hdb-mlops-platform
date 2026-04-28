@@ -125,7 +125,7 @@ class ModelLoader:
         if version is None:
             return None
         try:
-            mv = self._client.get_model_version(self._config.model_name, version)
+            mv = self._client.get_model_version(self._config.model_name, str(version))
             return mv.run_id
         except Exception:
             logger.exception("Failed to fetch run ID for version %s", version)
@@ -174,7 +174,7 @@ class ModelLoader:
         mv = self._client.get_model_version_by_alias(
             self._config.model_name, self._config.model_alias
         )
-        return mv.version
+        return int(mv.version)
 
     def _reload_if_changed(self) -> None:
         """Check the registry and swap the in-memory model+explainer if the alias moved.
