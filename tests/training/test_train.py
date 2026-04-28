@@ -129,7 +129,7 @@ class TestBuildPipeline:
 
 class TestLoadAndPrepareData:
     def test_returns_correct_feature_columns(self, synthetic_data_dir):
-        X, y = load_and_prepare_data(synthetic_data_dir)
+        X, _y = load_and_prepare_data(synthetic_data_dir)
         expected_cols = {
             "floor_area_sqm",
             "lease_commence_date",
