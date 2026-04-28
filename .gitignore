@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# DVC
+/data/raw
+/data/processed
+.dvc/cache
+.dvc/tmp
+
+# Env
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local model artefacts
+*.pkl
+*.joblib
