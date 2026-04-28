@@ -15,6 +15,7 @@ import time
 import mlflow
 import mlflow.pyfunc
 from mlflow import MlflowClient
+from mlflow.pyfunc import PyFuncModel
 
 from serving.config import ServingConfig
 
@@ -34,7 +35,7 @@ class ModelLoader:
     def __init__(self, config: ServingConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
-        self._model: mlflow.pyfunc.PyFuncModel | None = None
+        self._model: PyFuncModel | None = None
         self._current_version: str | None = None
         mlflow.set_tracking_uri(config.mlflow_tracking_uri)
         self._client = MlflowClient()
@@ -66,7 +67,7 @@ class ModelLoader:
             version,
         )
 
-    def get_model(self) -> mlflow.pyfunc.PyFuncModel:
+    def get_model(self) -> PyFuncModel:
         """Return the currently loaded model.
 
         Returns:
