@@ -159,3 +159,68 @@ class TestErrorResilience:
 
         assert loader.get_version() == version_before
         assert loader.get_model() is model_before
+
+    def test_reload_retains_model_when_explainer_init_fails(self, two_version_setup, monkeypatch):
+        uri, v1, v2 = two_version_setup
+        loader = ModelLoader(_make_config(uri))
+        loader.load_initial()
+
+        bundle_before = loader.get_explainer()
+        version_before = loader.get_version()
+
+        def _explainer_fails(model):
+            raise RuntimeError("Simulated explainer failure")
+
+        monkeypatch.setattr(loader, "_build_explainer_bundle", _explainer_fails)
+
+        # Move alias to v2 — reload will load the new model but explainer init fails
+        client = MlflowClient()
+        client.set_registered_model_alias("hdb-predictor", "champion", v2)
+        loader._reload_if_changed()
+
+        # Model and explainer should be unchanged — pair consistency preserved
+        assert loader.get_version() == version_before
+        assert loader.get_explainer() is bundle_before
+
+
+class TestExplainerBundle:
+    def test_get_explainer_returns_none_before_load(self, isolated_mlflow_uri):
+        loader = ModelLoader(_make_config(isolated_mlflow_uri))
+        assert loader.get_explainer() is None
+
+    def test_get_explainer_returns_bundle_after_load(self, single_version_setup):
+        uri, _ = single_version_setup
+        loader = ModelLoader(_make_config(uri))
+        loader.load_initial()
+
+        bundle = loader.get_explainer()
+        assert bundle is not None
+        assert bundle.explainer is not None
+        assert len(bundle.feature_names) > 0
+
+    def test_explainer_feature_names_match_preprocessor_output(self, single_version_setup):
+        uri, _ = single_version_setup
+        loader = ModelLoader(_make_config(uri))
+        loader.load_initial()
+
+        bundle = loader.get_explainer()
+        assert bundle is not None
+        expected_names = list(bundle.preprocessor.get_feature_names_out())
+        assert bundle.feature_names == expected_names
+
+    def test_explainer_swaps_atomically_with_model_on_alias_change(self, two_version_setup):
+        uri, v1, v2 = two_version_setup
+        loader = ModelLoader(_make_config(uri))
+        loader.load_initial()
+
+        bundle_v1 = loader.get_explainer()
+        assert bundle_v1 is not None
+
+        client = MlflowClient()
+        client.set_registered_model_alias("hdb-predictor", "champion", v2)
+        loader._reload_if_changed()
+
+        bundle_v2 = loader.get_explainer()
+        assert bundle_v2 is not None
+        assert bundle_v2 is not bundle_v1
+        assert int(loader.get_version()) == int(v2)
