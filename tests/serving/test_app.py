@@ -13,7 +13,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import serving.app as app_module
-from tests.conftest import StubModelLoader
+from tests.conftest import (
+    StubModelLoader,
+    build_fixture_explainer_bundle,
+    build_fixture_pipeline,
+    make_synthetic_features,
+)
 
 _TAMPINES_4ROOM = {
     "town": "TAMPINES",
@@ -159,17 +164,81 @@ class TestPredictEndpoint:
         assert isinstance(resp.json()["model_version"], int)
 
 
+@pytest.fixture
+def _fitted_pipeline():
+    """A fitted sklearn pipeline for SHAP tests — built once, shared within the module."""
+    X, y = make_synthetic_features(n=120)
+    pipeline = build_fixture_pipeline()
+    pipeline.fit(X, y)
+    return pipeline
+
+
+@pytest.fixture
+async def explain_client(monkeypatch, _fitted_pipeline):
+    """AsyncClient backed by a real sklearn pipeline and SHAP bundle.
+
+    Both the model and the explainer are derived from the same fitted pipeline
+    so the SHAP additivity property holds — predicted_resale_price from
+    model.predict equals base_value + sum(feature_contributions).
+    """
+    bundle = build_fixture_explainer_bundle(_fitted_pipeline)
+    stub = StubModelLoader(
+        model=_fitted_pipeline,
+        version="42",
+        run_id="test-run-shap",
+        explainer=bundle,
+    )
+    monkeypatch.setattr(app_module, "loader", stub)
+    async with AsyncClient(
+        transport=ASGITransport(app=app_module.app), base_url="http://test"
+    ) as client:
+        yield client
+
+
 class TestExplainEndpoint:
-    async def test_explain_returns_501(self, loaded_client):
-        resp = await loaded_client.post("/explain", json=_TAMPINES_4ROOM)
-        assert resp.status_code == 501
+    async def test_explain_happy_path_tampines_4room_returns_200(self, explain_client):
+        resp = await explain_client.post("/explain", json=_TAMPINES_4ROOM)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "predicted_resale_price" in body
+        assert "base_value" in body
+        assert "feature_contributions" in body
+        assert "model_version" in body
+        assert "model_alias" in body
+        assert isinstance(body["feature_contributions"], dict)
+        assert len(body["feature_contributions"]) > 0
+        assert 100_000 < body["predicted_resale_price"] < 2_000_000
 
-    async def test_explain_501_body_mentions_shap(self, loaded_client):
-        resp = await loaded_client.post("/explain", json=_TAMPINES_4ROOM)
-        assert "SHAP" in resp.json()["detail"]
+    async def test_explain_all_response_fields_are_populated(self, explain_client):
+        resp = await explain_client.post("/explain", json=_TAMPINES_4ROOM)
+        body = resp.json()
+        assert body["model_version"] == 42
+        assert body["model_alias"] == "champion"
+        assert isinstance(body["base_value"], float)
+        assert all(isinstance(v, float) for v in body["feature_contributions"].values())
 
-    async def test_explain_validates_request_schema(self, loaded_client):
-        # Validation runs before the stub response, so malformed input still 422s
+    async def test_explain_additivity_holds_within_epsilon(self, explain_client):
+        """sum(contributions) + base_value ≈ predicted_resale_price within 1.0 SGD."""
+        resp = await explain_client.post("/explain", json=_TAMPINES_4ROOM)
+        body = resp.json()
+        shap_total = sum(body["feature_contributions"].values()) + body["base_value"]
+        assert abs(shap_total - body["predicted_resale_price"]) < 1.0
+
+    async def test_explain_returns_503_when_version_not_loaded(self, version_unknown_client):
+        resp = await version_unknown_client.post("/explain", json=_TAMPINES_4ROOM)
+        assert resp.status_code == 503
+
+    async def test_explain_returns_422_on_negative_floor_area(self, explain_client):
         payload = {**_TAMPINES_4ROOM, "floor_area_sqm": -1.0}
-        resp = await loaded_client.post("/explain", json=payload)
+        resp = await explain_client.post("/explain", json=payload)
+        assert resp.status_code == 422
+
+    async def test_explain_returns_422_on_bad_month_format(self, explain_client):
+        payload = {**_TAMPINES_4ROOM, "month": "2024-6"}
+        resp = await explain_client.post("/explain", json=payload)
+        assert resp.status_code == 422
+
+    async def test_explain_returns_422_on_invalid_lease_year(self, explain_client):
+        payload = {**_TAMPINES_4ROOM, "lease_commence_date": 1959}
+        resp = await explain_client.post("/explain", json=payload)
         assert resp.status_code == 422

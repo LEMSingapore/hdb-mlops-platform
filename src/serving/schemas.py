@@ -39,8 +39,22 @@ class ExplainRequest(HDBFeatureInput):
     """Input features for a SHAP explanation request.
 
     Schema matches PredictRequest; kept as a separate type so the response
-    contract can evolve independently when SHAP is wired in.
+    contract can evolve independently.
     """
+
+
+class ExplainResponse(BaseModel):
+    """SHAP explanation result with per-feature contributions and model provenance.
+
+    The additivity property holds by construction for tree models:
+    sum(feature_contributions.values()) + base_value ≈ predicted_resale_price.
+    """
+
+    predicted_resale_price: float
+    base_value: float
+    feature_contributions: dict[str, float]
+    model_version: int
+    model_alias: str
 
 
 class HealthResponse(BaseModel):

@@ -5,10 +5,13 @@ import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import pytest
+import shap
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+
+from serving.model_loader import ExplainerBundle
 
 _NUMERIC_FEATURES = ["floor_area_sqm", "lease_commence_date", "float_time_series"]
 _CATEGORICAL_FEATURES = ["town", "storey_range", "flat_info"]
@@ -83,13 +86,37 @@ def register_model_version(
     return info.registered_model_version
 
 
+def build_fixture_explainer_bundle(pipeline: Pipeline) -> ExplainerBundle:
+    """Build an ExplainerBundle from a fitted fixture pipeline.
+
+    Used in app tests that need a real SHAP explainer without an MLflow roundtrip.
+    """
+    preprocessor = pipeline.named_steps["preprocessor"]
+    regressor = pipeline.named_steps["regressor"]
+    feature_names = list(preprocessor.get_feature_names_out())
+    explainer = shap.TreeExplainer(regressor)
+    return ExplainerBundle(
+        explainer=explainer,
+        preprocessor=preprocessor,
+        feature_names=feature_names,
+    )
+
+
 class StubModelLoader:
     """Test double for ModelLoader. No MLflow calls; state is set at construction."""
 
-    def __init__(self, *, model=None, version=None, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model=None,
+        version=None,
+        run_id: str | None = None,
+        explainer: ExplainerBundle | None = None,
+    ) -> None:
         self._model = model
         self._version = version
         self._run_id = run_id
+        self._explainer = explainer
 
     def load_initial(self) -> None:
         pass
@@ -107,6 +134,9 @@ class StubModelLoader:
 
     def get_run_id(self) -> str | None:
         return self._run_id
+
+    def get_explainer(self) -> ExplainerBundle | None:
+        return self._explainer
 
 
 @pytest.fixture
