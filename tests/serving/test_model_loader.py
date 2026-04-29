@@ -168,7 +168,7 @@ class TestErrorResilience:
         bundle_before = loader.get_explainer()
         version_before = loader.get_version()
 
-        def _explainer_fails(model):
+        def _explainer_fails(model_uri):
             raise RuntimeError("Simulated explainer failure")
 
         monkeypatch.setattr(loader, "_build_explainer_bundle", _explainer_fails)

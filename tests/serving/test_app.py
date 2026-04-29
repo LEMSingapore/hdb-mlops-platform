@@ -23,8 +23,6 @@ from tests.conftest import (
 _TAMPINES_4ROOM = {
     "town": "TAMPINES",
     "flat_type": "4 ROOM",
-    "flat_model": "Model A",
-    "storey_range": "07 TO 09",
     "floor_area_sqm": 93.0,
     "lease_commence_date": 1990,
     "month": "2024-01",

@@ -14,8 +14,6 @@ from serving.schemas import (
 _VALID_PAYLOAD = {
     "town": "TAMPINES",
     "flat_type": "4 ROOM",
-    "flat_model": "Model A",
-    "storey_range": "07 TO 09",
     "floor_area_sqm": 93.0,
     "lease_commence_date": 1990,
     "month": "2024-01",
@@ -26,9 +24,19 @@ class TestHDBFeatureInput:
     def test_valid_payload_parses(self):
         feature = HDBFeatureInput(**_VALID_PAYLOAD)
         assert feature.town == "TAMPINES"
+        assert feature.flat_type == "4 ROOM"
         assert feature.floor_area_sqm == 93.0
         assert feature.lease_commence_date == 1990
         assert feature.month == "2024-01"
+
+    def test_five_fields_only(self):
+        assert set(HDBFeatureInput.model_fields) == {
+            "town",
+            "flat_type",
+            "floor_area_sqm",
+            "lease_commence_date",
+            "month",
+        }
 
     def test_zero_floor_area_rejected(self):
         with pytest.raises(ValidationError):
@@ -39,33 +47,24 @@ class TestHDBFeatureInput:
             HDBFeatureInput(**{**_VALID_PAYLOAD, "floor_area_sqm": -10.0})
 
     def test_lease_year_too_early_rejected(self):
-        # 1959 is not > 1960, so Field(gt=1960) should reject it
         with pytest.raises(ValidationError):
             HDBFeatureInput(**{**_VALID_PAYLOAD, "lease_commence_date": 1959})
 
     def test_lease_year_boundary_1960_rejected(self):
-        # 1960 is not > 1960 (strictly greater than)
         with pytest.raises(ValidationError):
             HDBFeatureInput(**{**_VALID_PAYLOAD, "lease_commence_date": 1960})
 
     def test_lease_year_too_late_rejected(self):
-        # 2031 is not < 2030
         with pytest.raises(ValidationError):
             HDBFeatureInput(**{**_VALID_PAYLOAD, "lease_commence_date": 2031})
 
     def test_lease_year_boundary_2030_rejected(self):
-        # 2030 is not < 2030 (strictly less than)
         with pytest.raises(ValidationError):
             HDBFeatureInput(**{**_VALID_PAYLOAD, "lease_commence_date": 2030})
 
-    def test_month_invalid_month_number_rejected(self):
-        # "2024-13" is not a valid month (13 doesn't match \d{2} pattern)
-        # Actually the pattern only checks format, not validity of month number
-        # Month 13 matches ^\d{4}-\d{2}$ — document this and test what the code enforces
-        payload = {**_VALID_PAYLOAD, "month": "2024-13"}
-        # The regex ^\d{4}-\d{2}$ accepts 2024-13 since it only checks digit count.
-        # The schema enforces format but not calendar validity; this test documents that.
-        feature = HDBFeatureInput(**payload)
+    def test_month_invalid_format_accepted_by_regex(self):
+        # The pattern ^\d{4}-\d{2}$ accepts 2024-13 since it only checks digit count.
+        feature = HDBFeatureInput(**{**_VALID_PAYLOAD, "month": "2024-13"})
         assert feature.month == "2024-13"
 
     def test_month_wrong_format_two_digit_year_rejected(self):
@@ -97,7 +96,6 @@ class TestPredictResponse:
         assert isinstance(resp.model_version, int)
 
     def test_model_version_coerced_from_string(self):
-        # MLflow returns version as str; Pydantic v2 coerces to int in non-strict mode.
         resp = PredictResponse(
             predicted_resale_price=450_000.0,
             model_version="3",  # type: ignore[arg-type]
