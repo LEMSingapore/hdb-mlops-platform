@@ -272,3 +272,86 @@ def test_system_prompt_has_cache_control_ephemeral():
     system = call_kwargs["system"]
     assert isinstance(system, list)
     assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# Multiple tool_use blocks in one response are all answered
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_tool_uses_in_one_response_each_get_a_tool_result():
+    """If the model returns predict + explain in one response, both get tool_results."""
+    predict_block = _tool_use_block(
+        "predict_hdb_price",
+        "tu_p",
+        {
+            "town": "BISHAN",
+            "flat_type": "5 ROOM",
+            "floor_area_sqm": 120.0,
+            "lease_commence_date": 1988,
+            "month": "2025-04",
+        },
+    )
+    explain_block = _tool_use_block(
+        "explain_hdb_price",
+        "tu_e",
+        {
+            "town": "BISHAN",
+            "flat_type": "5 ROOM",
+            "floor_area_sqm": 120.0,
+            "lease_commence_date": 1988,
+            "month": "2025-04",
+        },
+    )
+    final_text = _text_block("Estimated S$780,000. Floor area drives the price.")
+
+    multi_tool_response = _make_message("tool_use", [predict_block, explain_block])
+    end_response = _make_message("end_turn", [final_text])
+
+    responses = [multi_tool_response, end_response]
+    idx = 0
+
+    def fake_create(**kwargs):
+        nonlocal idx
+        r = responses[idx]
+        idx += 1
+        return r
+
+    with (
+        patch("ui.chat_app.chat_agent._client") as mock_anthropic,
+        patch(
+            "ui.chat_app.chat_agent.predict_price",
+            return_value={
+                "predicted_resale_price": 780000.0,
+                "model_version": 4,
+                "model_alias": "champion",
+            },
+        ),
+        patch(
+            "ui.chat_app.chat_agent.explain_price",
+            return_value={
+                "predicted_resale_price": 780000.0,
+                "base_value": 440000.0,
+                "top_contributors": [],
+                "model_version": 4,
+            },
+        ),
+    ):
+        mock_anthropic.messages.create.side_effect = fake_create
+        history = [{"role": "user", "content": "5-room Bishan, 120sqm, lease 1988"}]
+        _, reply = chat_turn(history)
+
+    # The user message after the multi-tool response must contain both tool_results
+    tool_result_msgs = [
+        m
+        for m in history
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), list)
+        and any(
+            isinstance(item, dict) and item.get("type") == "tool_result" for item in m["content"]
+        )
+    ]
+    assert len(tool_result_msgs) == 1, "both results go in one user message"
+    result_ids = {item["tool_use_id"] for item in tool_result_msgs[0]["content"]}
+    assert result_ids == {"tu_p", "tu_e"}
+    assert "780,000" in reply

@@ -305,22 +305,22 @@ def chat_turn(history: list) -> tuple[list, str]:
         history.append({"role": "assistant", "content": resp.content})
 
         if resp.stop_reason == "tool_use":
-            tool_use = next(b for b in resp.content if b.type == "tool_use")
-            result_text, is_error = _dispatch_tool(tool_use.name, tool_use.input)
-
-            history.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use.id,
-                            "content": result_text,
-                            "is_error": is_error,
-                        }
-                    ],
-                }
-            )
+            # The model may call multiple tools in a single response. All tool_use
+            # blocks must have matching tool_result entries in the very next user
+            # message — the API rejects partial coverage.
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            tool_results = []
+            for tool_use in tool_uses:
+                result_text, is_error = _dispatch_tool(tool_use.name, tool_use.input)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": result_text,
+                        "is_error": is_error,
+                    }
+                )
+            history.append({"role": "user", "content": tool_results})
             continue
 
         text = "".join(b.text for b in resp.content if b.type == "text")
