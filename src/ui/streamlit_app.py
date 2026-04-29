@@ -63,50 +63,6 @@ FLAT_TYPES: list[str] = [
     "MULTI-GENERATION",
 ]
 
-FLAT_MODELS: list[str] = [
-    "Improved",
-    "New Generation",
-    "Model A",
-    "Standard",
-    "Simplified",
-    "Premium Apartment",
-    "Maisonette",
-    "Apartment",
-    "DBSS",
-    "Type S1",
-    "Type S2",
-    "Adjoined flat",
-    "Multi Generation",
-    "Premium Apartment Loft",
-    "2-room",
-    "3Gen",
-    "Improved-Maisonette",
-    "Premium Maisonette",
-    "Model A-Maisonette",
-    "Model A2",
-    "Terrace",
-]
-
-STOREY_RANGES: list[str] = [
-    "01 TO 03",
-    "04 TO 06",
-    "07 TO 09",
-    "10 TO 12",
-    "13 TO 15",
-    "16 TO 18",
-    "19 TO 21",
-    "22 TO 24",
-    "25 TO 27",
-    "28 TO 30",
-    "31 TO 33",
-    "34 TO 36",
-    "37 TO 39",
-    "40 TO 42",
-    "43 TO 45",
-    "46 TO 48",
-    "49 TO 51",
-]
-
 
 @st.cache_resource
 def _get_client() -> APIClient:
@@ -140,8 +96,6 @@ def main() -> None:
     with st.form("prediction_form"):
         town = st.selectbox("Town", TOWNS)
         flat_type = st.selectbox("Flat Type", FLAT_TYPES)
-        flat_model = st.selectbox("Flat Model", FLAT_MODELS)
-        storey_range = st.selectbox("Storey Range", STOREY_RANGES)
         floor_area_sqm = st.number_input(
             "Floor Area (sqm)", min_value=28, max_value=200, value=90, step=1
         )
@@ -165,8 +119,6 @@ def main() -> None:
     payload: dict = {
         "town": town,
         "flat_type": flat_type,
-        "flat_model": flat_model,
-        "storey_range": storey_range,
         "floor_area_sqm": float(floor_area_sqm),
         "lease_commence_date": int(lease_commence_date),
         "month": transaction_month.strftime("%Y-%m"),
