@@ -8,14 +8,14 @@ exercising the happy paths and every error-mapping branch.
 import httpx
 import pytest
 
-from ui.api_client import (
+from ui.form_app.api_client import (
     APIClient,
     APIConnectionError,
     ServerError,
     ServiceUnavailableError,
     ValidationError,
 )
-from ui.config import UIConfig
+from ui.form_app.config import UIConfig
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
