@@ -13,6 +13,7 @@ from typing import Any
 
 from anthropic import Anthropic
 
+from ui.chat_app.config import ChatConfig
 from ui.chat_app.predictor import (
     APIConnectionError,
     ServerError,
@@ -27,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
 
-_client = Anthropic()
+
+_config = ChatConfig()
+# Pass None when the field is empty so the SDK reads ANTHROPIC_API_KEY from the environment
+# directly rather than treating an empty string as a set (but invalid) key.
+_client = Anthropic(api_key=_config.anthropic_api_key or None)
 
 TOWNS: list[str] = [
     "ANG MO KIO",
