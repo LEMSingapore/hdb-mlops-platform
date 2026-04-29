@@ -1,16 +1,22 @@
 """Training script for HDB resale price predictor.
 
 Trains a GradientBoostingRegressor inside a sklearn Pipeline that bundles
-the ColumnTransformer preprocessor with the model. Logs params, metrics,
-the model artifact, its signature, and an input example to MLflow, then
-registers the model in the MLflow Model Registry.
+all preprocessing with the model. The pipeline accepts raw 5-field input
+(town, flat_type, floor_area_sqm, lease_commence_date, month) so the serving
+layer calls pipeline.predict() on raw DataFrames with no external preprocessing.
 
-Promotion to aliases (@champion, @challenger) is intentional and explicit:
-pass --promote champion (or --promote challenger) to set the alias after a
-successful run. Never use transition_model_version_stage().
+The month column is converted from 'YYYY-MM' strings to fractional years by
+MonthToFloatTransformer, which is baked into the ColumnTransformer. One-hot
+encoding handles town and flat_type; floor_area_sqm and lease_commence_date
+pass through as-is.
+
+Every successful training run automatically sets the @champion alias on the
+newly registered model version. This is interim Phase 1.5 behaviour; Phase 5
+will gate promotion behind an empirical RMSE threshold.
 
 Usage:
-    python -m training.train --promote champion
+    python -m training.train
+    python -m training.train --quick          # n_estimators=20, fast smoke-test
     python -m training.train --n-estimators 500 --learning-rate 0.05
 """
 
@@ -24,6 +30,7 @@ import mlflow.sklearn
 import numpy as np
 import pandas as pd
 from mlflow import MlflowClient
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -35,8 +42,9 @@ from training.config import TrainingConfig
 
 logger = logging.getLogger(__name__)
 
-NUMERIC_FEATURES: list[str] = ["floor_area_sqm", "lease_commence_date", "float_time_series"]
-CATEGORICAL_FEATURES: list[str] = ["town", "storey_range", "flat_info"]
+FEATURES: list[str] = ["town", "flat_type", "floor_area_sqm", "lease_commence_date", "month"]
+NUMERIC_FEATURES: list[str] = ["floor_area_sqm", "lease_commence_date"]
+CATEGORICAL_FEATURES: list[str] = ["town", "flat_type"]
 TARGET: str = "resale_price"
 
 # Ordered to match legacy dataset filenames exactly.
@@ -48,23 +56,44 @@ _RAW_FILES: list[str] = [
     "Resale flat prices based on registration date from Jan-2017 onwards.csv",
 ]
 
-# Aliases that a caller may promote a trained model to.
-VALID_ALIASES: frozenset[str] = frozenset({"champion", "challenger", "shadow"})
+
+class MonthToFloatTransformer(BaseEstimator, TransformerMixin):
+    """Convert 'YYYY-MM' month strings to fractional years for temporal ordering.
+
+    Baked into the ColumnTransformer so the pipeline accepts month as a raw
+    string column. The fractional year encoding (e.g. 2024.417 for June 2024)
+    preserves temporal order for the gradient boosting splits.
+    """
+
+    def fit(self, x: object, y: object = None) -> "MonthToFloatTransformer":
+        return self
+
+    def transform(self, x: object) -> np.ndarray:
+        values = (
+            x.iloc[:, 0] if hasattr(x, "iloc") else np.asarray(x)[:, 0]  # type: ignore[union-attr]
+        )
+        result = np.empty(len(values))
+        for i, val in enumerate(values):
+            year_str, month_str = str(val).split("-")
+            result[i] = int(year_str) + (int(month_str) - 1) / 12.0
+        return result.reshape(-1, 1)
+
+    def get_feature_names_out(self, input_features: object = None) -> np.ndarray:
+        return np.array(["float_time_series"], dtype=object)
 
 
 def load_and_prepare_data(data_dir: Path) -> tuple[pd.DataFrame, pd.Series]:
     """Load all raw CSV files and return feature DataFrame and target Series.
 
-    Normalises casing differences across datasets (the 1990-1999 file uses
-    uppercase for flat_model; later files use title case). Derives two
-    engineered features: flat_info (flat_type + flat_model) and
-    float_time_series (month as a fractional year for temporal ordering).
+    Normalises town and flat_type to uppercase across all source files.
+    The month column is retained as a 'YYYY-MM' string; conversion to a
+    numeric value is handled by MonthToFloatTransformer inside the pipeline.
 
     Args:
         data_dir: Directory containing the five raw CSV files.
 
     Returns:
-        X: DataFrame with columns matching NUMERIC_FEATURES + CATEGORICAL_FEATURES.
+        X: DataFrame with columns matching FEATURES.
         y: Series of resale prices.
     """
     frames: list[pd.DataFrame] = []
@@ -75,21 +104,10 @@ def load_and_prepare_data(data_dir: Path) -> tuple[pd.DataFrame, pd.Series]:
 
     merged = pd.concat(frames, ignore_index=True)
 
-    # Normalise string columns so categories are consistent across the five
-    # source files, which were published at different times with different
-    # capitalisation conventions.
     merged["flat_type"] = merged["flat_type"].str.strip().str.upper()
-    merged["flat_model"] = merged["flat_model"].str.strip().str.title()
     merged["town"] = merged["town"].str.strip().str.upper()
-    merged["storey_range"] = merged["storey_range"].str.strip().str.upper()
 
-    merged["flat_info"] = merged["flat_type"] + " " + merged["flat_model"]
-
-    month_dt = pd.to_datetime(merged["month"], format="%Y-%m")
-    merged["float_time_series"] = month_dt.dt.year + (month_dt.dt.month - 1) / 12.0
-
-    feature_cols = NUMERIC_FEATURES + CATEGORICAL_FEATURES
-    X = merged[feature_cols].copy()
+    X = merged[FEATURES].copy()
     y = merged[TARGET].copy()
 
     return X, y
@@ -104,13 +122,12 @@ def build_pipeline(
 ) -> Pipeline:
     """Build a sklearn Pipeline combining preprocessing and the GBR regressor.
 
-    Bundling the ColumnTransformer inside the Pipeline means MLflow logs a
-    self-contained model artifact: the serving layer calls pipeline.predict()
-    on raw feature DataFrames with no separate preprocessing step.
-
-    OneHotEncoder uses handle_unknown="ignore" so unseen categories at
-    inference time (e.g. a new town) get all-zero encoding rather than an
-    error.
+    The ColumnTransformer bakes all preprocessing into the model artifact:
+    - floor_area_sqm and lease_commence_date pass through as numerics.
+    - town and flat_type are one-hot encoded (handle_unknown='ignore' so
+      unseen categories at inference time produce an all-zero encoding rather
+      than an error).
+    - month ('YYYY-MM') is converted to fractional years by MonthToFloatTransformer.
 
     Args:
         n_estimators: Number of boosting stages.
@@ -130,6 +147,7 @@ def build_pipeline(
                 OneHotEncoder(handle_unknown="ignore", sparse_output=False),
                 CATEGORICAL_FEATURES,
             ),
+            ("month", MonthToFloatTransformer(), ["month"]),
         ],
         remainder="drop",
     )
@@ -176,7 +194,8 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
     """Execute one training run and return the MLflow run ID.
 
     Logs params, train/test metrics, and the trained pipeline as a registered
-    model artifact. Optionally promotes the resulting model version to an alias.
+    model artifact. Always promotes the resulting version to @champion — Phase 5
+    will replace this with a gated promotion path.
 
     Args:
         args: Parsed CLI arguments.
@@ -187,6 +206,8 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
     """
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
     mlflow.set_experiment(config.mlflow_experiment_name)
+
+    n_estimators = 20 if args.quick else args.n_estimators
 
     data_dir = Path(args.data_dir)
     logger.info("Loading data from %s", data_dir)
@@ -199,18 +220,18 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
     logger.info("Train: %d rows  Test: %d rows", len(X_train), len(X_test))
 
     pipeline = build_pipeline(
-        n_estimators=args.n_estimators,
+        n_estimators=n_estimators,
         learning_rate=args.learning_rate,
         max_depth=args.max_depth,
         min_samples_leaf=args.min_samples_leaf,
         max_features=args.max_features,
     )
 
-    run_name = f"gbr-n{args.n_estimators}-lr{args.learning_rate}-d{args.max_depth}"
+    run_name = f"gbr-n{n_estimators}-lr{args.learning_rate}-d{args.max_depth}"
     with mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(
             {
-                "n_estimators": args.n_estimators,
+                "n_estimators": n_estimators,
                 "learning_rate": args.learning_rate,
                 "max_depth": args.max_depth,
                 "min_samples_leaf": args.min_samples_leaf,
@@ -220,7 +241,7 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
             }
         )
 
-        logger.info("Fitting pipeline (n_estimators=%d)...", args.n_estimators)
+        logger.info("Fitting pipeline (n_estimators=%d)...", n_estimators)
         pipeline.fit(X_train, y_train)
 
         train_metrics = compute_metrics(y_train, pipeline.predict(X_train))
@@ -236,14 +257,12 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
             test_metrics["r2"],
         )
 
-        # Infer the signature from the raw feature DataFrame so the serving
-        # layer knows the expected input schema without inspecting the pipeline.
         signature = mlflow.models.infer_signature(X_train, pipeline.predict(X_train))
         input_example = X_train.head(5)
 
         model_info = mlflow.sklearn.log_model(
             sk_model=pipeline,
-            artifact_path="model",
+            name="model",
             signature=signature,
             input_example=input_example,
             registered_model_name=config.model_registry_name,
@@ -257,14 +276,9 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
             run.info.run_id,
         )
 
-        if args.promote:
-            client = MlflowClient()
-            client.set_registered_model_alias(config.model_registry_name, args.promote, version)
-            logger.info(
-                "Set @%s → version %s",
-                args.promote,
-                version,
-            )
+        client = MlflowClient()
+        client.set_registered_model_alias(config.model_registry_name, "champion", version)
+        logger.info("Set @champion → version %s", version)
 
         return run.info.run_id
 
@@ -280,11 +294,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory containing raw CSV files (default: data/raw)",
     )
     parser.add_argument(
+        "--quick",
+        action="store_true",
+        default=False,
+        help="Use n_estimators=20 for a fast smoke-test run (overrides --n-estimators)",
+    )
+    parser.add_argument(
         "--n-estimators",
         type=int,
         default=1000,
         metavar="N",
-        help="Number of boosting stages (default: 1000)",
+        help="Number of boosting stages (default: 1000; ignored when --quick is set)",
     )
     parser.add_argument(
         "--learning-rate",
@@ -320,17 +340,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.2,
         metavar="T",
         help="Fraction of data held out for evaluation (default: 0.2)",
-    )
-    parser.add_argument(
-        "--promote",
-        choices=sorted(VALID_ALIASES),
-        default=None,
-        metavar="ALIAS",
-        help=(
-            "Alias to assign to the trained model version after registration. "
-            f"One of: {', '.join(sorted(VALID_ALIASES))}. "
-            "Omit to register without promotion."
-        ),
     )
     return parser.parse_args(argv)
 
