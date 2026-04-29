@@ -10,8 +10,19 @@ import logging
 import streamlit as st
 
 from ui.chat_app.chat_agent import chat_turn
+from ui.chat_app.config import ChatConfig
 
 logger = logging.getLogger(__name__)
+
+_config = ChatConfig()
+if not _config.anthropic_api_key:
+    st.error(
+        "**ANTHROPIC_API_KEY is not set.** "
+        "Export it in the same shell before launching:\n\n"
+        "```\nexport ANTHROPIC_API_KEY=sk-ant-...\n"
+        "streamlit run src/ui/chat_app/streamlit_app.py\n```"
+    )
+    st.stop()
 
 st.set_page_config(
     page_title="HDB Resale Price Chat",
