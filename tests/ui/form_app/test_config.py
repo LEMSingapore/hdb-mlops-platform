@@ -1,6 +1,6 @@
 """Tests for UIConfig environment variable loading."""
 
-from ui.config import UIConfig
+from ui.form_app.config import UIConfig
 
 
 def test_defaults_without_env_vars():

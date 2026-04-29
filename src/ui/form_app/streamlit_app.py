@@ -1,4 +1,4 @@
-"""Streamlit front end for HDB resale price prediction.
+"""Diagnostic form-based UI for HDB resale price prediction.
 
 Form-based UI that calls the FastAPI service for /predict and /explain.
 No model code, SHAP computation, or serialised model loading runs in this
@@ -13,14 +13,14 @@ import numpy as np
 import shap
 import streamlit as st
 
-from ui.api_client import (
+from ui.form_app.api_client import (
     APIClient,
     APIConnectionError,
     ServerError,
     ServiceUnavailableError,
     ValidationError,
 )
-from ui.config import UIConfig
+from ui.form_app.config import UIConfig
 
 logger = logging.getLogger(__name__)
 

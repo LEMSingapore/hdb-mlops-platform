@@ -6,12 +6,19 @@ returning parsed JSON dicts to the caller.
 """
 
 import logging
+from typing import Protocol
 
 import httpx
 
-from ui.config import UIConfig
-
 logger = logging.getLogger(__name__)
+
+
+class _APIConfig(Protocol):
+    """Structural interface satisfied by any settings object that provides
+    the two fields needed to construct the HTTP client."""
+
+    api_base_url: str
+    request_timeout_seconds: int
 
 
 class APIError(Exception):
@@ -63,7 +70,7 @@ class APIClient:
 
     def __init__(
         self,
-        config: UIConfig,
+        config: _APIConfig,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._config = config
