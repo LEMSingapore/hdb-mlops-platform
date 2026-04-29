@@ -39,3 +39,7 @@ mlartifacts/
 # MLflow local tracking store
 mlflow.db
 mlflow.db-journal
+
+# Lookup tables are small and committed to the repo
+!/data/lookups/
+!/data/lookups/*
