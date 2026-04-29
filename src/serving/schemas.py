@@ -8,16 +8,15 @@ from pydantic import BaseModel, Field
 
 
 class HDBFeatureInput(BaseModel):
-    """Feature fields shared by prediction and explanation requests.
+    """Five raw feature fields shared by prediction and explanation requests.
 
-    The serving layer derives flat_info and float_time_series from the natural
-    fields supplied here, matching the preprocessing applied during training.
+    The pipeline baked into the registered model handles all preprocessing:
+    one-hot encoding for town and flat_type, passthrough for the numerics,
+    and MonthToFloatTransformer for month. No client-side preprocessing needed.
     """
 
     town: str = Field(..., examples=["ANG MO KIO"])
     flat_type: str = Field(..., examples=["3 ROOM"])
-    flat_model: str = Field(..., examples=["Model A"])
-    storey_range: str = Field(..., examples=["07 TO 09"])
     floor_area_sqm: float = Field(..., gt=0, examples=[67.0])
     lease_commence_date: int = Field(..., gt=1960, lt=2030, examples=[1986])
     month: str = Field(..., pattern=r"^\d{4}-\d{2}$", examples=["2024-01"])

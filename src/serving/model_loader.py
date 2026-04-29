@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import mlflow
 import mlflow.pyfunc
+import mlflow.sklearn
 import shap
 from mlflow import MlflowClient
 from mlflow.pyfunc import PyFuncModel
@@ -80,7 +81,7 @@ class ModelLoader:
         version = self._resolve_alias_version()
         model_uri = f"models:/{self._config.model_name}@{self._config.model_alias}"
         model = mlflow.pyfunc.load_model(model_uri)
-        bundle = self._build_explainer_bundle(model)
+        bundle = self._build_explainer_bundle(model_uri)
         with self._lock:
             self._model = model
             self._current_version = version
@@ -147,18 +148,22 @@ class ModelLoader:
             self._config.reload_interval_seconds,
         )
 
-    def _build_explainer_bundle(self, model: PyFuncModel) -> ExplainerBundle:
-        """Initialise a TreeExplainer from the sklearn pipeline inside the pyfunc model.
+    def _build_explainer_bundle(self, model_uri: str) -> ExplainerBundle:
+        """Initialise a TreeExplainer from the sklearn pipeline at the given URI.
 
-        Extracts the fitted preprocessor and the GradientBoostingRegressor from
-        the pipeline, then wraps them into an ExplainerBundle alongside the
+        Uses mlflow.sklearn.load_model (public API) rather than inspecting the
+        pyfunc wrapper internals. Extracts the fitted preprocessor and regressor
+        from the pipeline's named steps, then builds the ExplainerBundle with
         post-transformation feature names.
 
+        Args:
+            model_uri: MLflow model URI, e.g. 'models:/hdb-predictor@champion'.
+
         Raises:
-            Exception: If the model is not a sklearn pipeline with the expected
-                       named steps, or if shap.TreeExplainer raises.
+            Exception: If the URI cannot be resolved, the model is not a sklearn
+                       pipeline with the expected named steps, or shap.TreeExplainer raises.
         """
-        sklearn_pipeline = model._model_impl.sklearn_model  # type: ignore[attr-defined]
+        sklearn_pipeline = mlflow.sklearn.load_model(model_uri)
         preprocessor = sklearn_pipeline.named_steps["preprocessor"]
         regressor = sklearn_pipeline.named_steps["regressor"]
         feature_names = list(preprocessor.get_feature_names_out())
@@ -199,7 +204,7 @@ class ModelLoader:
             new_model = mlflow.pyfunc.load_model(model_uri)
 
             try:
-                new_bundle = self._build_explainer_bundle(new_model)
+                new_bundle = self._build_explainer_bundle(model_uri)
             except Exception:
                 logger.exception(
                     "Explainer initialisation failed for version %s; "

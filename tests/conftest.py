@@ -12,27 +12,27 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 from serving.model_loader import ExplainerBundle
+from training.train import MonthToFloatTransformer
 
-_NUMERIC_FEATURES = ["floor_area_sqm", "lease_commence_date", "float_time_series"]
-_CATEGORICAL_FEATURES = ["town", "storey_range", "flat_info"]
+_NUMERIC_FEATURES = ["floor_area_sqm", "lease_commence_date"]
+_CATEGORICAL_FEATURES = ["town", "flat_type"]
 
 
 def make_synthetic_features(n: int = 100) -> tuple[pd.DataFrame, pd.Series]:
     """Generate synthetic HDB feature rows for training fixture models."""
     rng = np.random.default_rng(42)
     towns = ["TAMPINES", "ANG MO KIO", "BEDOK"]
-    flat_infos = ["4 ROOM Model A", "3 ROOM New Generation", "5 ROOM Improved"]
-    storey_ranges = ["04 TO 06", "07 TO 09", "10 TO 12"]
+    flat_types = ["4 ROOM", "3 ROOM", "5 ROOM"]
+    months = ["2018-01", "2019-06", "2020-12", "2021-03", "2022-09"]
     rows = []
     for _ in range(n):
         rows.append(
             {
                 "floor_area_sqm": float(rng.integers(65, 130)),
                 "lease_commence_date": int(rng.integers(1980, 2010)),
-                "float_time_series": 2018.0 + float(rng.integers(0, 6)),
                 "town": towns[int(rng.integers(0, len(towns)))],
-                "storey_range": storey_ranges[int(rng.integers(0, len(storey_ranges)))],
-                "flat_info": flat_infos[int(rng.integers(0, len(flat_infos)))],
+                "flat_type": flat_types[int(rng.integers(0, len(flat_types)))],
+                "month": months[int(rng.integers(0, len(months)))],
             }
         )
     X = pd.DataFrame(rows)
@@ -53,6 +53,7 @@ def build_fixture_pipeline() -> Pipeline:
                 OneHotEncoder(handle_unknown="ignore", sparse_output=False),
                 _CATEGORICAL_FEATURES,
             ),
+            ("month", MonthToFloatTransformer(), ["month"]),
         ],
         remainder="drop",
     )
@@ -79,7 +80,7 @@ def register_model_version(
     with mlflow.start_run():
         info = mlflow.sklearn.log_model(
             sk_model=pipeline,
-            artifact_path="model",
+            name="model",
             signature=signature,
             registered_model_name=model_name,
         )

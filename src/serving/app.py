@@ -22,7 +22,6 @@ from serving.model_loader import ModelLoader
 from serving.schemas import (
     ExplainRequest,
     ExplainResponse,
-    HDBFeatureInput,
     HealthResponse,
     ModelInfoResponse,
     PredictRequest,
@@ -54,31 +53,6 @@ app = FastAPI(
 )
 
 
-def _build_feature_dataframe(req: HDBFeatureInput) -> pd.DataFrame:
-    """Convert a feature request into the DataFrame expected by the sklearn pipeline.
-
-    Applies the same normalisation as load_and_prepare_data in the training
-    script: town and storey_range uppercased, flat_info derived from
-    flat_type + flat_model, float_time_series derived from month string.
-    """
-    year_str, month_str = req.month.split("-")
-    float_time_series = int(year_str) + (int(month_str) - 1) / 12.0
-    flat_info = f"{req.flat_type.strip().upper()} {req.flat_model.strip().title()}"
-
-    return pd.DataFrame(
-        [
-            {
-                "floor_area_sqm": req.floor_area_sqm,
-                "lease_commence_date": req.lease_commence_date,
-                "float_time_series": float_time_series,
-                "town": req.town.strip().upper(),
-                "storey_range": req.storey_range.strip().upper(),
-                "flat_info": flat_info,
-            }
-        ]
-    )
-
-
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest) -> PredictResponse:
     """Return a resale price prediction for a single HDB flat.
@@ -87,14 +61,24 @@ async def predict(req: PredictRequest) -> PredictResponse:
     thread swaps it within 60 seconds of a promotion event, so the version
     field in the response may change between calls after a promotion.
     """
-    model = loader.get_model()
     version = loader.get_version()
     if version is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Model not loaded yet — try again shortly",
         )
-    df = _build_feature_dataframe(req)
+    model = loader.get_model()
+    df = pd.DataFrame(
+        [
+            {
+                "town": req.town.strip().upper(),
+                "flat_type": req.flat_type.strip().upper(),
+                "floor_area_sqm": req.floor_area_sqm,
+                "lease_commence_date": req.lease_commence_date,
+                "month": req.month,
+            }
+        ]
+    )
     try:
         prediction = float(model.predict(df)[0])  # type: ignore[index]
     except Exception as exc:
@@ -132,11 +116,21 @@ async def explain(req: ExplainRequest) -> ExplainResponse:
             detail="SHAP explainer not available — try again shortly",
         )
     model = loader.get_model()
-    df = _build_feature_dataframe(req)
+    df = pd.DataFrame(
+        [
+            {
+                "town": req.town.strip().upper(),
+                "flat_type": req.flat_type.strip().upper(),
+                "floor_area_sqm": req.floor_area_sqm,
+                "lease_commence_date": req.lease_commence_date,
+                "month": req.month,
+            }
+        ]
+    )
     try:
         prediction = float(model.predict(df)[0])  # type: ignore[index]
-        X_transformed = shap_bundle.preprocessor.transform(df)  # type: ignore[attr-defined]
-        shap_values = shap_bundle.explainer.shap_values(X_transformed)
+        x_transformed = shap_bundle.preprocessor.transform(df)  # type: ignore[attr-defined]
+        shap_values = shap_bundle.explainer.shap_values(x_transformed)
         # expected_value is a scalar for some tree models but a 1-element array for
         # GradientBoostingRegressor — .item() handles both safely.
         base_value = float(np.asarray(shap_bundle.explainer.expected_value).item())

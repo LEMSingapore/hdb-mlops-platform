@@ -5,9 +5,10 @@ The lookup table is loaded once at module import from a CSV with columns
 ``data/lookups/postal_codes.csv``; the path is overridable via the
 ``HDB_POSTAL_CSV_PATH`` environment variable for testing.
 
-The ``town`` field of :class:`AddressInfo` is left as ``None`` until Session B,
-which builds a ``street_full → town`` mapping from the resale training data
-(that dataset carries ``town`` as a direct column).
+Town resolution uses :data:`lookup.street_to_town.STREET_TO_TOWN`, a static
+dict derived from the five HDB resale price CSV files by
+``scripts/build_street_town_mapping.py``. The ``town`` field is ``None`` only
+when the resolved street is not present in that mapping.
 """
 
 import csv
@@ -18,6 +19,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lookup.abbreviations import expand_street_abbreviations
+from lookup.street_to_town import STREET_TO_TOWN
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +37,10 @@ class AddressInfo(BaseModel):
         block: Block number including any letter suffix, e.g. "323C" or "11A".
         street_abbreviated: Street name as stored in the HDB data, e.g. "BT BATOK ST 22".
         street_full: Street name with abbreviations expanded, e.g. "BUKIT BATOK STREET 22".
-        town: HDB planning town, e.g. "BUKIT BATOK". Populated in Session B once
-            the resale training data (which carries ``town`` directly) is used to
-            build a ``street_full → town`` mapping. ``None`` until then.
+        town: HDB planning town, e.g. "BUKIT BATOK". Populated when the resolved
+            street is present in :data:`lookup.street_to_town.STREET_TO_TOWN`.
+            ``None`` when the street is not found in the mapping (e.g. non-HDB
+            addresses or streets added after the mapping was last generated).
     """
 
     postal_code: str
@@ -87,10 +90,12 @@ def lookup_postal(postal_code: int | str) -> AddressInfo | None:
     if entry is None:
         return None
     block, street_abbreviated = entry
+    street_full = expand_street_abbreviations(street_abbreviated)
+    street_key = " ".join(street_full.upper().split())
     return AddressInfo(
         postal_code=padded,
         block=block,
         street_abbreviated=street_abbreviated,
-        street_full=expand_street_abbreviations(street_abbreviated),
-        town=None,
+        street_full=street_full,
+        town=STREET_TO_TOWN.get(street_key),
     )
