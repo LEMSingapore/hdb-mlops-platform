@@ -32,7 +32,18 @@ class TestLookupPostalKnownCodes:
         assert result is not None
         assert result.street_abbreviated != result.street_full
 
-    def test_town_is_none(self) -> None:
+    def test_town_is_populated_for_known_hdb_street(self) -> None:
+        # 659592 is block 1 at BT BATOK ST 22 (BUKIT BATOK STREET 22).
+        # Both abbreviations expand and the street maps to BUKIT BATOK in the
+        # resale training data, so town should be populated.
+        result = lookup_postal(659592)
+        assert result is not None
+        assert result.town == "BUKIT BATOK"
+
+    def test_town_is_none_when_street_not_in_mapping(self) -> None:
+        # 398614 is LOR 24 GEYLANG — present in the postal CSV but the block at
+        # that address is not an HDB resale flat, so it does not appear in the
+        # resale CSVs and therefore has no entry in the street→town mapping.
         result = lookup_postal(398614)
         assert result is not None
         assert result.town is None
