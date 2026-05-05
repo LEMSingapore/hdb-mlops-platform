@@ -1,12 +1,13 @@
 """Integration tests for the training pipeline.
 
-The end-to-end test uses n_estimators=20 (--quick equivalent) and synthetic
-CSV files to stay well under 30 seconds while exercising the full train()
-path: data loading, preprocessing, model fitting, MLflow logging,
-registration, and automatic @champion alias promotion.
+The end-to-end tests use n_estimators=20 and the tiny_sqlite_db fixture (20
+hand-crafted rows) to stay well under 30 seconds while exercising the full
+train() path: data loading from SQLite, preprocessing, model fitting, MLflow
+logging, registration, and automatic @champion alias promotion.
 """
 
 import argparse
+from pathlib import Path
 
 import mlflow
 import mlflow.exceptions
@@ -17,42 +18,11 @@ from mlflow import MlflowClient
 
 from training.config import TrainingConfig
 from training.train import (
-    _RAW_FILES,
     FEATURES,
     build_pipeline,
     compute_metrics,
-    load_and_prepare_data,
     train,
 )
-
-_TOWNS = ["TAMPINES", "ANG MO KIO", "BEDOK", "JURONG WEST", "WOODLANDS"]
-_FLAT_TYPES = ["3 ROOM", "4 ROOM", "5 ROOM"]
-
-
-def _write_synthetic_csv(path, n_rows: int, rng: np.random.Generator) -> None:
-    """Write one synthetic raw HDB CSV file at the given path."""
-    data = {
-        "month": [
-            f"{rng.integers(2015, 2024)}-{int(rng.integers(1, 13)):02d}" for _ in range(n_rows)
-        ],
-        "town": [_TOWNS[rng.integers(0, len(_TOWNS))] for _ in range(n_rows)],
-        "flat_type": [_FLAT_TYPES[rng.integers(0, len(_FLAT_TYPES))] for _ in range(n_rows)],
-        "flat_model": ["Model A"] * n_rows,
-        "storey_range": ["07 TO 09"] * n_rows,
-        "floor_area_sqm": rng.integers(65, 130, n_rows).astype(float).tolist(),
-        "lease_commence_date": rng.integers(1980, 2010, n_rows).tolist(),
-        "resale_price": rng.integers(350_000, 700_000, n_rows).tolist(),
-    }
-    pd.DataFrame(data).to_csv(path, index=False)
-
-
-@pytest.fixture
-def synthetic_data_dir(tmp_path):
-    """Write all five expected raw CSV files with synthetic HDB data."""
-    rng = np.random.default_rng(0)
-    for filename in _RAW_FILES:
-        _write_synthetic_csv(tmp_path / filename, n_rows=60, rng=rng)
-    return tmp_path
 
 
 @pytest.fixture
@@ -72,9 +42,8 @@ def train_config(train_mlflow_uri):
 
 
 @pytest.fixture
-def minimal_train_args(synthetic_data_dir):
+def minimal_train_args():
     return argparse.Namespace(
-        data_dir=str(synthetic_data_dir),
         quick=False,
         n_estimators=20,
         learning_rate=0.1,
@@ -152,83 +121,74 @@ class TestBuildPipeline:
         assert preds[0] > 0
 
 
-class TestLoadAndPrepareData:
-    def test_returns_correct_feature_columns(self, synthetic_data_dir):
-        X, _y = load_and_prepare_data(synthetic_data_dir)
-        assert set(X.columns) == set(FEATURES)
-
-    def test_month_column_retains_yyyy_mm_format(self, synthetic_data_dir):
-        X, _ = load_and_prepare_data(synthetic_data_dir)
-        assert X["month"].str.match(r"^\d{4}-\d{2}$").all()
-
-    def test_town_is_uppercased(self, synthetic_data_dir):
-        X, _ = load_and_prepare_data(synthetic_data_dir)
-        assert (X["town"] == X["town"].str.upper()).all()
-
-    def test_rows_from_all_files_are_concatenated(self, synthetic_data_dir):
-        X, _ = load_and_prepare_data(synthetic_data_dir)
-        assert len(X) == 300  # 5 files x 60 rows each
-
-
 class TestTrainEndToEnd:
-    def test_train_registers_model_and_logs_metrics(
-        self, minimal_train_args, train_config, train_mlflow_uri
-    ):
+    def test_train_reads_from_sqlite_and_registers_model(
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
         """Reduced-size end-to-end run; should complete well under 30 seconds."""
-        run_id = train(minimal_train_args, train_config)
+        run_id = train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
 
         assert isinstance(run_id, str)
         assert len(run_id) > 0
 
         mlflow.set_tracking_uri(train_mlflow_uri)
         client = MlflowClient()
-
         versions = client.search_model_versions("name='hdb-predictor'")
         assert len(versions) >= 1
 
-        run = mlflow.get_run(run_id)
-        metrics = run.data.metrics
-        assert "test_rmse" in metrics
-        assert "test_mae" in metrics
-        assert "test_r2" in metrics
-        assert metrics["test_rmse"] > 0
-        assert metrics["test_mae"] > 0
-
-    def test_train_logs_train_metrics_alongside_test_metrics(
-        self, minimal_train_args, train_config, train_mlflow_uri
-    ):
-        run_id = train(minimal_train_args, train_config)
+    def test_train_logs_test_and_train_metrics(
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
+        run_id = train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
         mlflow.set_tracking_uri(train_mlflow_uri)
         run = mlflow.get_run(run_id)
         metrics = run.data.metrics
-        assert "train_rmse" in metrics
-        assert "train_mae" in metrics
-        assert "train_r2" in metrics
+        for key in ("test_rmse", "test_mae", "test_r2", "train_rmse", "train_mae", "train_r2"):
+            assert key in metrics, f"Missing metric: {key}"
+        assert metrics["test_rmse"] > 0
 
     def test_train_attaches_signature_to_logged_model(
-        self, minimal_train_args, train_config, train_mlflow_uri
-    ):
-        run_id = train(minimal_train_args, train_config)
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
+        run_id = train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
         mlflow.set_tracking_uri(train_mlflow_uri)
         model_info = mlflow.models.get_model_info(f"runs:/{run_id}/model")
         assert model_info.signature is not None
         assert model_info.signature.inputs is not None
 
     def test_train_auto_sets_champion_alias(
-        self, minimal_train_args, train_config, train_mlflow_uri
-    ):
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
         """@champion is set automatically on every successful run."""
-        train(minimal_train_args, train_config)
+        train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
         mlflow.set_tracking_uri(train_mlflow_uri)
         client = MlflowClient()
         mv = client.get_model_version_by_alias("hdb-predictor", "champion")
         assert mv is not None
 
     def test_quick_flag_uses_twenty_estimators(
-        self, synthetic_data_dir, train_config, train_mlflow_uri
-    ):
+        self,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
         args = argparse.Namespace(
-            data_dir=str(synthetic_data_dir),
             quick=True,
             n_estimators=1000,
             learning_rate=0.1,
@@ -237,16 +197,20 @@ class TestTrainEndToEnd:
             max_features=0.5,
             test_size=0.2,
         )
-        run_id = train(args, train_config)
+        run_id = train(args, train_config, db_path=tiny_sqlite_db)
         mlflow.set_tracking_uri(train_mlflow_uri)
         run = mlflow.get_run(run_id)
         assert run.data.params["n_estimators"] == "20"
 
     def test_logged_model_accepts_raw_input_without_external_preprocessing(
-        self, minimal_train_args, train_config, train_mlflow_uri
-    ):
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
         """The logged model artifact must accept the 5 raw fields directly."""
-        run_id = train(minimal_train_args, train_config)
+        run_id = train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
         mlflow.set_tracking_uri(train_mlflow_uri)
         model = mlflow.sklearn.load_model(f"runs:/{run_id}/model")
         raw_input = pd.DataFrame(
@@ -263,3 +227,30 @@ class TestTrainEndToEnd:
         preds = model.predict(raw_input)
         assert preds.shape == (1,)
         assert preds[0] > 0
+
+    def test_train_uses_only_feature_columns_from_sqlite(
+        self,
+        minimal_train_args: argparse.Namespace,
+        train_config: TrainingConfig,
+        train_mlflow_uri: str,
+        tiny_sqlite_db: Path,
+    ) -> None:
+        """Training must use only FEATURES — extra SQLite columns (id, block, etc.) are ignored."""
+        run_id = train(minimal_train_args, train_config, db_path=tiny_sqlite_db)
+        mlflow.set_tracking_uri(train_mlflow_uri)
+        model = mlflow.sklearn.load_model(f"runs:/{run_id}/model")
+        # A DataFrame with only the 5 expected features must predict without error.
+        df = pd.DataFrame(
+            [
+                {
+                    "town": "ANG MO KIO",
+                    "flat_type": "3 ROOM",
+                    "floor_area_sqm": 67.0,
+                    "lease_commence_date": 1983,
+                    "month": "2022-03",
+                }
+            ]
+        )
+        assert set(df.columns) == set(FEATURES)
+        preds = model.predict(df)
+        assert preds.shape == (1,)

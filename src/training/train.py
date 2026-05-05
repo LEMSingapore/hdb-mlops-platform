@@ -10,6 +10,9 @@ MonthToFloatTransformer, which is baked into the ColumnTransformer. One-hot
 encoding handles town and flat_type; floor_area_sqm and lease_commence_date
 pass through as-is.
 
+Training data is read from the SQLite database built by scripts/csv_to_sqlite.py.
+Run that script once after cloning, and re-run it if data/raw/ CSVs change.
+
 Every successful training run automatically sets the @champion alias on the
 newly registered model version. This is interim Phase 1.5 behaviour; Phase 5
 will gate promotion behind an empirical RMSE threshold.
@@ -38,6 +41,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
+from data.queries import load_all_transactions
 from training.config import TrainingConfig
 
 logger = logging.getLogger(__name__)
@@ -46,15 +50,6 @@ FEATURES: list[str] = ["town", "flat_type", "floor_area_sqm", "lease_commence_da
 NUMERIC_FEATURES: list[str] = ["floor_area_sqm", "lease_commence_date"]
 CATEGORICAL_FEATURES: list[str] = ["town", "flat_type"]
 TARGET: str = "resale_price"
-
-# Ordered to match legacy dataset filenames exactly.
-_RAW_FILES: list[str] = [
-    "Resale Flat Prices (Based on Approval Date), 1990 - 1999.csv",
-    "Resale Flat Prices (Based on Approval Date), 2000 - Feb 2012.csv",
-    "Resale Flat Prices (Based on Registration Date), From Mar 2012 to Dec 2014.csv",
-    "Resale Flat Prices (Based on Registration Date), From Jan 2015 to Dec 2016.csv",
-    "Resale flat prices based on registration date from Jan-2017 onwards.csv",
-]
 
 
 class MonthToFloatTransformer(BaseEstimator, TransformerMixin):
@@ -80,37 +75,6 @@ class MonthToFloatTransformer(BaseEstimator, TransformerMixin):
 
     def get_feature_names_out(self, input_features: object = None) -> np.ndarray:
         return np.array(["float_time_series"], dtype=object)
-
-
-def load_and_prepare_data(data_dir: Path) -> tuple[pd.DataFrame, pd.Series]:
-    """Load all raw CSV files and return feature DataFrame and target Series.
-
-    Normalises town and flat_type to uppercase across all source files.
-    The month column is retained as a 'YYYY-MM' string; conversion to a
-    numeric value is handled by MonthToFloatTransformer inside the pipeline.
-
-    Args:
-        data_dir: Directory containing the five raw CSV files.
-
-    Returns:
-        X: DataFrame with columns matching FEATURES.
-        y: Series of resale prices.
-    """
-    frames: list[pd.DataFrame] = []
-    for filename in _RAW_FILES:
-        path = data_dir / filename
-        df = pd.read_csv(path)
-        frames.append(df)
-
-    merged = pd.concat(frames, ignore_index=True)
-
-    merged["flat_type"] = merged["flat_type"].str.strip().str.upper()
-    merged["town"] = merged["town"].str.strip().str.upper()
-
-    X = merged[FEATURES].copy()
-    y = merged[TARGET].copy()
-
-    return X, y
 
 
 def build_pipeline(
@@ -190,7 +154,11 @@ def compute_metrics(
     }
 
 
-def train(args: argparse.Namespace, config: TrainingConfig) -> str:
+def train(
+    args: argparse.Namespace,
+    config: TrainingConfig,
+    db_path: Path | None = None,
+) -> str:
     """Execute one training run and return the MLflow run ID.
 
     Logs params, train/test metrics, and the trained pipeline as a registered
@@ -200,6 +168,7 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
     Args:
         args: Parsed CLI arguments.
         config: Training configuration (tracking URI, experiment name, etc.).
+        db_path: Path to the SQLite database. Uses DataConfig default if None.
 
     Returns:
         The MLflow run ID for the completed run.
@@ -209,10 +178,16 @@ def train(args: argparse.Namespace, config: TrainingConfig) -> str:
 
     n_estimators = 20 if args.quick else args.n_estimators
 
-    data_dir = Path(args.data_dir)
-    logger.info("Loading data from %s", data_dir)
-    X, y = load_and_prepare_data(data_dir)
-    logger.info("Dataset loaded: %d rows", len(X))
+    logger.info("Loading transactions from SQLite")
+    try:
+        df = load_all_transactions(db_path)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    logger.info("Dataset loaded: %d rows", len(df))
+
+    X = df[FEATURES].copy()
+    y = df[TARGET].copy()
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=7
@@ -287,11 +262,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the training script."""
     parser = argparse.ArgumentParser(
         description="Train HDB resale price predictor and log to MLflow."
-    )
-    parser.add_argument(
-        "--data-dir",
-        default="data/raw",
-        help="Directory containing raw CSV files (default: data/raw)",
     )
     parser.add_argument(
         "--quick",
