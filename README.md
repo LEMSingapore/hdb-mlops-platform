@@ -2,7 +2,7 @@
 
 A production-style MLOps platform for predicting Singapore HDB resale prices, with a chat-driven user interface on top. The model trains on 30+ years of public resale transaction data, serves predictions and SHAP-based explanations through a FastAPI service, and is wrapped by a Claude Haiku agent that turns plain-English property descriptions into structured predictions with natural-language explanations of what's driving the price.
 
-> **Status (May 2026)** — Phases 1 and 1.5 are complete. Phases 1.6a-d are in progress through May. The SQLite query layer (Phase 1.6a), MCP server (Phase 1.6b), and LangGraph orchestration (Phase 1.6c) are committed in the build plan but not yet shipped — until they land, training reads CSVs directly from `data/raw/` and the chat agent uses Claude Haiku tool use without LangGraph. See [What's next](#whats-next).
+> **Status (May 2026)** — Phases 1, 1.5, and 1.6a are complete. Phase 1.6a added the SQLite data layer: training now reads from `data/hdb.db` (built from the raw CSVs by `scripts/csv_to_sqlite.py`) instead of reading CSVs directly. The MCP server (Phase 1.6b) and LangGraph orchestration (Phase 1.6c) are next. See [What's next](#whats-next).
 
 ## What this demonstrates
 
@@ -87,10 +87,9 @@ cd hdb-mlops-platform
 uv venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
+python scripts/csv_to_sqlite.py   # builds data/hdb.db from the raw CSVs (~20s, 975k rows)
 python -m training.train          # ~5 minutes, registers a model as @champion
 ```
-
-Once Phase 1.6a ships, an additional `python scripts/csv_to_sqlite.py` step will populate `data/hdb.db` before training. The `python -m training.train` line stays the same — internally it'll switch from CSV reads to SQLite queries.
 
 ### Terminal 1 — FastAPI service
 
@@ -157,6 +156,7 @@ curl -s -X POST http://localhost:8000/predict \
 src/
 ├── training/        Training script, sklearn pipeline, MLflow logging
 ├── serving/         FastAPI app, model loader, schemas, SHAP integration
+├── data/            SQLite data layer — connection, queries, find_similar
 ├── lookup/          Postal code resolution, street→town mapping
 └── ui/
     ├── chat_app/    Primary chat UI — Claude Haiku tool use over the API
@@ -167,13 +167,15 @@ docs/
 ├── build-plan.md    The phased delivery plan, current state, what's next
 └── adr/             Architecture Decision Records (alias vs stages, etc.)
 scripts/
-└── build_street_town_mapping.py    Regenerates the static street→town dict
+├── csv_to_sqlite.py              Builds data/hdb.db from the raw CSVs (run once)
+└── build_street_town_mapping.py  Regenerates the static street→town dict
 data/
 ├── raw/             HDB resale CSVs (DVC-tracked, not committed)
+├── hdb.db           SQLite transactions DB (gitignored, rebuilt from raw CSVs)
 └── lookups/         Postal code reference table (committed, 700KB)
 ```
 
-Coming in Phase 1.6: `src/data/` (SQLite query layer), `src/mcp_server/` (MCP tools), `scripts/csv_to_sqlite.py`, and a LangGraph state machine inside `src/ui/chat_app/`.
+Coming in Phase 1.6: `src/mcp_server/` (MCP tools — Phase 1.6b) and a LangGraph state machine inside `src/ui/chat_app/` (Phase 1.6c).
 
 ## Design decisions
 
@@ -199,14 +201,16 @@ Both trained on 975,942 transactions with identical hyperparameters (`learning_r
 
 ## What's tested
 
-131 tests, run with `pytest`:
+148 tests, run with `pytest`:
 
 | Module | Tests | What it covers |
 |---|---:|---|
+| `tests/data/test_connection.py` | 5 | Context manager lifecycle, row_factory, env-var override, missing-DB error |
+| `tests/data/test_queries.py` | 14 | load_all_transactions, count_transactions, find_similar (exact, fallback, edge cases) |
 | `tests/serving/test_schemas.py` | 17 | Pydantic boundary conditions, validation errors, coercion rules |
 | `tests/serving/test_model_loader.py` | 16 | Alias resolution, atomic swap, `ExplainerBundle` consistency on failure |
 | `tests/serving/test_app.py` | 22 | All four endpoints, 503 guard, 422 validation, SHAP additivity |
-| `tests/training/test_train.py` | 13 | End-to-end training in 26s with `n_estimators=20`, signature attached, alias set |
+| `tests/training/test_train.py` | 12 | End-to-end training from SQLite fixture, signature attached, alias set |
 | `tests/lookup/test_postal.py` | 14 | Postal resolution, town derivation, edge cases |
 | `tests/lookup/test_abbreviations.py` | 15 | Token-level expansion, idempotency, no substring collisions |
 | `tests/ui/form_app/` | 9 | API client error hierarchy, config from env |
@@ -218,7 +222,7 @@ A lesson from this work: **passing tests don't mean the system works.** Pydantic
 
 The [build plan](docs/build-plan.md) tracks delivery in phases. Phases 1 and 1.5 are complete. The remainder, in order:
 
-- **Phase 1.6a — SQLite data layer** ([#22 sibling, to be filed](https://github.com/LEMSingapore/hdb-mlops-platform/issues)). Wrap the CSV-based training pipeline with a SQLite query layer. Same data, queryable interface, foundation for `find_similar_transactions` and AIAP-aligned data loading. — Target: week of May 4
+- **Phase 1.6a — SQLite data layer** — Complete. `src/data/` wraps the CSV data in a queryable SQLite database. Training reads from `data/hdb.db` via `load_all_transactions()`. `find_similar()` is implemented and ready for the Phase 1.6b MCP tool.
 - **Phase 1.6b — MCP server** ([#22](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22)). Expose `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, and `find_similar_transactions` as MCP tools so the platform is consumable from Claude Desktop and any other MCP client. — Target: late May
 - **Phase 1.6c — LangGraph orchestration**. Replace the chat agent's direct tool-use loop with a LangGraph state machine that calls MCP tools. Each node handles a distinct step (parse, lookup, validate, predict, explain, narrate) with retry and error handling. — Target: late May
 - **Phase 1.6d — AIAP-format README**. Restructure the project documentation to align with AIAP's 8-section submission template, dual-purposing this work for the AI Apprenticeship Programme. — Target: mid-May

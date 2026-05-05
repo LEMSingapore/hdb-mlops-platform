@@ -40,6 +40,10 @@ mlartifacts/
 mlflow.db
 mlflow.db-journal
 
+# SQLite data store (derived from CSVs — rebuild with scripts/csv_to_sqlite.py)
+data/hdb.db
+data/*.db-journal
+
 # Lookup tables are small and committed to the repo
 !/data/lookups/
 !/data/lookups/*
