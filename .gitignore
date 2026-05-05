@@ -43,3 +43,7 @@ mlflow.db-journal
 # Lookup tables are small and committed to the repo
 !/data/lookups/
 !/data/lookups/*
+
+# Claude Code per-machine state (settings.json is committed)
+.claude/*
+!.claude/settings.json

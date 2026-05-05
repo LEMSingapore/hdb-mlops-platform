@@ -3,4 +3,4 @@
 from lookup.abbreviations import expand_street_abbreviations
 from lookup.postal import AddressInfo, lookup_postal
 
-__all__ = ["AddressInfo", "lookup_postal", "expand_street_abbreviations"]
+__all__ = ["AddressInfo", "expand_street_abbreviations", "lookup_postal"]
