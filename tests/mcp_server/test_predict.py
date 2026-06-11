@@ -69,6 +69,26 @@ class TestExplainPrediction:
         for entry in data["top_contributors"]:
             assert set(entry.keys()) == {"feature", "contribution"}
 
+    async def test_top_contributors_carry_human_readable_labels(self, stub_loader) -> None:
+        async with Client(mcp) as client:
+            result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)
+        top = result.structured_content["top_contributors"]
+        for entry in top:
+            label = entry["feature"]
+            # A presentation label reads naturally: it never exposes a raw
+            # transformer prefix, and every handled case carries a space or colon.
+            assert not label.startswith(("cat__", "num__", "month__"))
+            assert " " in label or ":" in label
+
+    async def test_feature_contributions_dict_keeps_raw_keys(self, stub_loader) -> None:
+        async with Client(mcp) as client:
+            result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)
+        contributions = result.structured_content["feature_contributions"]
+        # The full raw-keyed dict stays available for programmatic consumers.
+        assert "num__floor_area_sqm" in contributions
+        assert all(key.startswith(("cat__", "num__", "month__")) for key in contributions)
+        assert all(isinstance(value, float) for value in contributions.values())
+
     async def test_contributors_sorted_by_absolute_value_descending(self, stub_loader) -> None:
         async with Client(mcp) as client:
             result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)

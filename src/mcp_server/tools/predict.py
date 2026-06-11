@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from mcp_server.config import MCPConfig
+from mcp_server.formatting import format_feature_label
 from serving.config import ServingConfig
 from serving.model_loader import ModelLoader
 
@@ -77,18 +78,29 @@ class PredictionResult(TypedDict):
 
 
 class FeatureContribution(TypedDict):
-    """One feature's signed SHAP contribution to a prediction."""
+    """One feature's signed SHAP contribution, with a presentation-ready label.
+
+    ``feature`` is a human-readable label (e.g. "Floor area (95 sqm)", "Town:
+    Tampines"), not the raw pipeline feature name.
+    """
 
     feature: str
     contribution: float
 
 
 class ExplanationResult(TypedDict):
-    """SHAP explanation with the top contributors by absolute value."""
+    """SHAP explanation carrying both human-readable and raw contributions.
+
+    ``top_contributors`` holds the five largest contributors by absolute value,
+    each labelled for direct presentation to a human. ``feature_contributions``
+    holds every contribution keyed by its raw pipeline feature name, for
+    programmatic consumers that need exact identifiers.
+    """
 
     predicted_resale_price: float
     base_value: float
     top_contributors: list[FeatureContribution]
+    feature_contributions: dict[str, float]
     model_version: int
     model_alias: str
 
@@ -138,6 +150,12 @@ def explain_prediction(
     descending. By construction the full set of contributions plus base_value
     sums to the predicted price; the top five are the dominant drivers.
 
+    The ``top_contributors`` list contains human-readable labels suitable for
+    direct presentation — an LLM client can narrate them without knowing what
+    the sklearn ColumnTransformer did internally. The ``feature_contributions``
+    dict contains every contribution keyed by its raw pipeline feature name,
+    suitable for programmatic consumers that need exact identifiers.
+
     Args:
         town: HDB town, e.g. "TAMPINES". Case-insensitive.
         flat_type: Flat type, e.g. "4 ROOM". Case-insensitive.
@@ -147,7 +165,8 @@ def explain_prediction(
 
     Returns:
         The predicted price, the model's base (expected) value, the top five
-        feature contributions, and the serving model's version and alias.
+        labelled feature contributions, the full raw-keyed contribution dict,
+        and the serving model's version and alias.
     """
     loader = _get_loader()
     model = loader.get_model()
@@ -163,8 +182,15 @@ def explain_prediction(
     base_value = float(np.asarray(bundle.explainer.expected_value).item())
     contributions = dict(zip(bundle.feature_names, shap_values[0].tolist(), strict=False))
 
+    input_values = {
+        "town": town,
+        "flat_type": flat_type,
+        "floor_area_sqm": floor_area_sqm,
+        "lease_commence_date": lease_commence_date,
+        "month": month,
+    }
     top_contributors: list[FeatureContribution] = [
-        {"feature": feature, "contribution": value}
+        {"feature": format_feature_label(feature, input_values), "contribution": value}
         for feature, value in sorted(
             contributions.items(), key=lambda kv: abs(kv[1]), reverse=True
         )[:5]
@@ -176,6 +202,7 @@ def explain_prediction(
         predicted_resale_price=round(prediction, 2),
         base_value=base_value,
         top_contributors=top_contributors,
+        feature_contributions=contributions,
         model_version=version,
         model_alias=_config.model_alias,
     )
