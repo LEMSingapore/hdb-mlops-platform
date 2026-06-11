@@ -2,11 +2,12 @@
 
 The happy path runs the compiled graph against the real MCP predict and explain
 tools, with a StubModelLoader standing in for the @champion model so the test is
-hermetic. The postal lookup hits the real (committed) lookup table; the stub
-parse supplies postal 528003, which is absent from that table, so the lookup
-no-ops and the explicit town carries the prediction. The missing-fields path
-swaps in a parse stub that returns only a partial extraction and asserts the
-graph short-circuits past prediction straight to narration.
+hermetic. The parse and narrate nodes make live Anthropic calls in production, so
+both are stubbed here with deterministic doubles — these tests exercise the graph
+wiring and the MCP tool layer, not the LLM phrasing, which is unit-tested in
+``test_nodes`` with a mocked client. The missing-fields path swaps in a parse
+stub that returns only a partial extraction and asserts the graph short-circuits
+past prediction straight to narration.
 """
 
 import pytest
@@ -19,6 +20,7 @@ from tests.conftest import (
     make_synthetic_features,
 )
 from ui.chat_app.graph import GraphState, build_graph
+from ui.chat_app.graph.nodes import narrate as narrate_node
 from ui.chat_app.graph.nodes import parse as parse_node
 
 
@@ -34,8 +36,33 @@ def stub_loader(monkeypatch):
     return stub
 
 
+async def _canonical_parse(state: GraphState) -> dict:
+    """Deterministic stand-in for the LLM parse node: the standing test input."""
+    return {
+        "town": "TAMPINES",
+        "flat_type": "3 ROOM",
+        "floor_area_sqm": 95.0,
+        "lease_commence_date": 1985,
+        "month": "2024-06",
+        "postal_code": 528003,
+        "status": "pending",
+    }
+
+
+async def _deterministic_narrate(state: GraphState) -> dict:
+    """Deterministic stand-in for the LLM narrate node, echoing the prediction."""
+    return {
+        "response_text": (
+            f"Predicted price: S${state.predicted_price:,.0f} (model v{state.model_version})"
+        )
+    }
+
+
 class TestHappyPath:
-    async def test_full_traversal_predicts_and_narrates(self, stub_loader) -> None:
+    async def test_full_traversal_predicts_and_narrates(self, stub_loader, monkeypatch) -> None:
+        # Patch the LLM nodes before build_graph so the compiled graph captures them.
+        monkeypatch.setattr(parse_node, "run", _canonical_parse)
+        monkeypatch.setattr(narrate_node, "run", _deterministic_narrate)
         graph = build_graph()
         result = await graph.ainvoke(
             GraphState(user_message="3 room flat in Tampines, postal 528003")
@@ -57,8 +84,12 @@ class TestMissingFieldsPath:
         async def partial_parse(state: GraphState) -> dict:
             return {"town": "TAMPINES", "flat_type": "4 ROOM"}
 
-        # Patch before build_graph so the compiled graph captures the stub.
+        async def deterministic_narrate(state: GraphState) -> dict:
+            return {"response_text": "Please provide: " + ", ".join(state.missing_fields)}
+
+        # Patch before build_graph so the compiled graph captures the stubs.
         monkeypatch.setattr(parse_node, "run", partial_parse)
+        monkeypatch.setattr(narrate_node, "run", deterministic_narrate)
         graph = build_graph()
         result = await graph.ainvoke(GraphState(user_message="tampines 4 room"))
         state = GraphState(**result)

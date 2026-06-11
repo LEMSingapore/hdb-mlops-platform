@@ -3,12 +3,16 @@
 The MCP-backed nodes (postal_lookup, predict, explain) call ``get_client()``;
 each test replaces it with a fake whose async methods return canned payloads or
 raise, so the node's own logic is exercised without the tool layer. The validate
-node is pure Python and needs no double.
+node is pure Python and needs no double. The LLM-backed nodes (parse, narrate)
+have their module-level ``_client`` patched with a mock returning canned message
+objects, so no live Anthropic call is made.
 """
 
+import json
 from typing import Any
+from unittest.mock import MagicMock
 
-from ui.chat_app.graph.nodes import explain, lookup, predict, validate
+from ui.chat_app.graph.nodes import explain, lookup, narrate, parse, predict, validate
 from ui.chat_app.graph.state import GraphState
 
 _READY_FIELDS: dict[str, Any] = {
@@ -169,3 +173,158 @@ class TestExplainNode:
     async def test_skips_when_not_ready(self) -> None:
         state = GraphState(user_message="x", status="needs_follow_up", predicted_price=500_000.0)
         assert await explain.run(state) == {}
+
+
+# ---------------------------------------------------------------------------
+# LLM node mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _llm_response(text: str) -> MagicMock:
+    """A mock Anthropic message whose single text block carries ``text``."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    msg = MagicMock()
+    msg.content = [block]
+    return msg
+
+
+def _mock_client(text: str) -> MagicMock:
+    """A mock Anthropic client whose ``messages.create`` returns ``text``."""
+    client = MagicMock()
+    client.messages.create.return_value = _llm_response(text)
+    return client
+
+
+def _parse_continuation(status: str, fields: dict[str, Any], reasoning: str = "ok") -> str:
+    """The text the model returns after the prefilled opening brace.
+
+    The parse node prepends ``{`` to the model's reply, so the mock must omit it.
+    """
+    payload = json.dumps({"status": status, "reasoning": reasoning, "fields": fields})
+    assert payload.startswith("{")
+    return payload[1:]
+
+
+_FULL_FIELDS = {
+    "town": "tampines",
+    "flat_type": "4 room",
+    "floor_area_sqm": 95.0,
+    "lease_commence_date": 1985,
+    "month": "2024-06",
+    "postal_code": None,
+}
+
+
+class TestParseNode:
+    async def test_extracts_and_normalises_fields(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            parse, "_client", _mock_client(_parse_continuation("extracted", _FULL_FIELDS))
+        )
+        result = await parse.run(GraphState(user_message="4 room flat in tampines, 95 sqm"))
+        assert result["status"] == "pending"
+        # Town and flat_type are uppercased to match the encoder vocabulary.
+        assert result["town"] == "TAMPINES"
+        assert result["flat_type"] == "4 ROOM"
+        assert result["floor_area_sqm"] == 95.0
+        assert result["lease_commence_date"] == 1985
+        assert result["month"] == "2024-06"
+        assert result["postal_code"] is None
+
+    async def test_out_of_scope_sets_status_and_reasoning(self, monkeypatch) -> None:
+        empty = dict.fromkeys(_FULL_FIELDS, None)
+        monkeypatch.setattr(
+            parse,
+            "_client",
+            _mock_client(_parse_continuation("out_of_scope", empty, reasoning="that is a condo")),
+        )
+        result = await parse.run(GraphState(user_message="how much for a condo in newton"))
+        assert result == {"status": "out_of_scope", "parse_reasoning": "that is a condo"}
+
+    async def test_malformed_json_sets_error_status(self, monkeypatch) -> None:
+        monkeypatch.setattr(parse, "_client", _mock_client("not valid json at all"))
+        result = await parse.run(GraphState(user_message="anything"))
+        assert result["status"] == "error"
+        assert result["parse_reasoning"]
+
+    async def test_api_failure_sets_error_status(self, monkeypatch) -> None:
+        client = MagicMock()
+        client.messages.create.side_effect = RuntimeError("api down")
+        monkeypatch.setattr(parse, "_client", client)
+        result = await parse.run(GraphState(user_message="anything"))
+        assert result["status"] == "error"
+        assert "api down" in result["parse_reasoning"]
+
+    async def test_null_town_is_left_as_none(self, monkeypatch) -> None:
+        fields = {**_FULL_FIELDS, "town": None}
+        monkeypatch.setattr(
+            parse, "_client", _mock_client(_parse_continuation("extracted", fields))
+        )
+        result = await parse.run(GraphState(user_message="a 4 room flat, 95 sqm"))
+        assert result["town"] is None
+
+
+_READY_STATE_KW: dict[str, Any] = {
+    "status": "ready_to_predict",
+    "predicted_price": 586_888.0,
+    "model_version": 7,
+    "top_contributors": [
+        {"feature": "Floor area (95 sqm)", "contribution": 40_000.0},
+        {"feature": "Town: Tampines", "contribution": 12_000.0},
+        {"feature": "Lease commence (1985)", "contribution": -8_000.0},
+    ],
+}
+
+
+class TestNarrateNode:
+    async def test_ready_branch_narrates_price(self, monkeypatch) -> None:
+        client = _mock_client("Your flat is worth about S$586,888.")
+        monkeypatch.setattr(narrate, "_client", client)
+        state = GraphState(user_message="x", **_READY_STATE_KW)
+        result = await narrate.run(state)
+        assert result == {"response_text": "Your flat is worth about S$586,888."}
+        # The contributors and price are passed to the model as context.
+        context = client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "S$586,888" in context
+        assert "Floor area (95 sqm)" in context
+
+    async def test_follow_up_branch_lists_missing_fields(self, monkeypatch) -> None:
+        client = _mock_client("What's the floor area and lease year?")
+        monkeypatch.setattr(narrate, "_client", client)
+        state = GraphState(
+            user_message="x",
+            status="needs_follow_up",
+            missing_fields=["floor_area_sqm", "lease_commence_date"],
+        )
+        result = await narrate.run(state)
+        assert result == {"response_text": "What's the floor area and lease year?"}
+        context = client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "floor area" in context
+
+    async def test_out_of_scope_branch_declines(self, monkeypatch) -> None:
+        client = _mock_client("I only cover HDB resale flats.")
+        monkeypatch.setattr(narrate, "_client", client)
+        state = GraphState(
+            user_message="x", status="out_of_scope", parse_reasoning="that is a condo"
+        )
+        result = await narrate.run(state)
+        assert result == {"response_text": "I only cover HDB resale flats."}
+
+    async def test_error_branch_apologises(self, monkeypatch) -> None:
+        client = _mock_client("Sorry, something went wrong. Please try again.")
+        monkeypatch.setattr(narrate, "_client", client)
+        state = GraphState(user_message="x", status="error", error="boom: internal detail")
+        result = await narrate.run(state)
+        assert result["response_text"] == "Sorry, something went wrong. Please try again."
+        # The raw internal error is never sent to the model.
+        context = client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "internal detail" not in context
+
+    async def test_llm_failure_falls_back_to_fixed_text(self, monkeypatch) -> None:
+        client = MagicMock()
+        client.messages.create.side_effect = RuntimeError("api down")
+        monkeypatch.setattr(narrate, "_client", client)
+        state = GraphState(user_message="x", **_READY_STATE_KW)
+        result = await narrate.run(state)
+        assert result["response_text"] == narrate._FALLBACK_ERROR
