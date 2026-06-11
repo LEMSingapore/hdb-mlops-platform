@@ -2,7 +2,7 @@
 
 A production-style MLOps platform for predicting Singapore HDB resale prices, with a chat-driven user interface on top. The model trains on 30+ years of public resale transaction data, serves predictions and SHAP-based explanations through a FastAPI service, and is wrapped by a Claude Haiku agent that turns plain-English property descriptions into structured predictions with natural-language explanations of what's driving the price.
 
-> **Status (June 2026)** — Phases 1, 1.5, 1.6a, and 1.6b are complete. Phase 1.6b added the MCP server: the platform's prediction, explanation, postal lookup, model-info, and comparable-search capabilities are now callable as Model Context Protocol tools from Claude Desktop or any other MCP client. LangGraph orchestration (Phase 1.6c) is next. See [What's next](#whats-next).
+> **Status (June 2026)** — Phases 1, 1.5, 1.6a, 1.6b, and 1.6c are complete. Phase 1.6b added the MCP server: prediction, explanation, postal lookup, model-info, and comparable-search are callable as Model Context Protocol tools from Claude Desktop or any other MCP client. Phase 1.6c replaced the chat agent's Anthropic tool-use loop with a LangGraph orchestration graph that calls those MCP tools as a deterministic state machine. See [What's next](#whats-next).
 
 ## What this demonstrates
 
@@ -14,8 +14,9 @@ The interesting parts of this repo, with specifics:
 - **Preprocessing baked into the sklearn `Pipeline`.** No training-serving feature pipeline duplication. The model artefact is end-to-end: raw input goes in, prediction comes out. A custom `MonthToFloatTransformer` converts `YYYY-MM` to fractional years inside the `ColumnTransformer`.
 - **Postal-code first chat UX.** Users type `"3 room flat in Tampines, 95 sqm, lease started 1985, postal 522201"` in plain English. The agent calls `lookup_postal_code` to resolve postal → town, then `predict_hdb_price` for the price, then `explain_hdb_price` and narrates the top 3 SHAP contributors back to the user in English.
 - **MCP server exposing the platform to any LLM client.** Five tools — `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, `find_similar_transactions` — are served over the Model Context Protocol, so Claude Desktop or Cursor call the same prediction and explanation logic the Streamlit chat uses, with no per-client code. The server calls the platform's Python modules directly rather than HTTP-wrapping FastAPI: one process, shared in-memory model, no localhost dependency ([ADR 0003](docs/adr/0003-mcp-direct-imports-not-http.md)). `explain_prediction` returns SHAP contributions twice over — raw feature names for programmatic consumers and human-readable labels for the LLM client to present directly — so a narrated explanation never leaks `cat__town_TAMPINES`-style pipeline internals.
-- **171 tests** across schemas, model loader, FastAPI endpoints, MCP tools, training pipeline, postal lookup, predictor, and chat agent. Pre-commit hooks enforce ruff, ruff-format, mypy, and a typed exception hierarchy in the API client.
-- **Architecture Decision Records** under `docs/adr/` for choices that matter — alias-vs-stages, promotion threshold derivation, MLflow SPOF acknowledgement.
+- **LangGraph orchestration with a deliberate node per step.** The chat turn is an explicit state machine — `parse -> postal_lookup -> validate -> (predict -> explain) -> narrate` — not an LLM-driven tool-use loop. A conditional edge after `validate` routes missing-field, out-of-scope, and error states straight to `narrate`, skipping prediction. The orchestration layer (LangGraph) and the tool layer (the MCP server, called in-process) are separate concerns: the graph decides *what happens when*, the MCP tools *do the work*. The LLM is demoted to two bounded nodes — `parse` does JSON slot-filling, `narrate` phrases the result — both calling the Anthropic SDK directly, with per-node error handling so a tool fault is narrated gracefully rather than raised ([ADR 0004](docs/adr/0004-langgraph-orchestration-over-direct-tool-loop.md)).
+- **239 tests** across schemas, model loader, FastAPI endpoints, MCP tools, training pipeline, postal lookup, predictor, the chat agent, and the orchestration graph — nodes, branch routing, and an end-to-end traversal against the real MCP tools. Pre-commit hooks enforce ruff, ruff-format, mypy, and a typed exception hierarchy in the API client.
+- **Architecture Decision Records** under `docs/adr/` for choices that matter — alias-vs-stages, SQLite as a derived store, MCP direct imports over HTTP, and LangGraph orchestration over a direct tool loop.
 
 ## Architecture
 
@@ -177,7 +178,7 @@ data/
 └── lookups/         Postal code reference table (committed, 700KB)
 ```
 
-Coming in Phase 1.6: a LangGraph state machine inside `src/ui/chat_app/` (Phase 1.6c) that orchestrates the MCP tools.
+The LangGraph orchestration graph lives in `src/ui/chat_app/graph/` (Phase 1.6c): `state.py` holds the threaded `GraphState`, `nodes/` holds one module per step, and `graph_builder.py` wires them together.
 
 ## Design decisions
 
@@ -227,7 +228,7 @@ The [build plan](docs/build-plan.md) tracks delivery in phases. Phases 1 and 1.5
 
 - **Phase 1.6a — SQLite data layer** — Complete. `src/data/` wraps the CSV data in a queryable SQLite database. Training reads from `data/hdb.db` via `load_all_transactions()`. `find_similar()` is implemented and ready for the Phase 1.6b MCP tool.
 - **Phase 1.6b — MCP server** ([#22](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22)). Complete. `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, and `find_similar_transactions` are exposed as MCP tools in `src/mcp_server/`, consumable from Claude Desktop and any other MCP client. The server calls the platform's modules directly rather than HTTP-wrapping FastAPI ([ADR 0003](docs/adr/0003-mcp-direct-imports-not-http.md)).
-- **Phase 1.6c — LangGraph orchestration**. Replace the chat agent's direct tool-use loop with a LangGraph state machine that calls MCP tools. Each node handles a distinct step (parse, lookup, validate, predict, explain, narrate) with retry and error handling. — Target: late May
+- **Phase 1.6c — LangGraph orchestration** ([ADR 0004](docs/adr/0004-langgraph-orchestration-over-direct-tool-loop.md)). Complete. The chat agent's direct tool-use loop is replaced by a LangGraph state machine — `parse -> postal_lookup -> validate -> (predict -> explain) -> narrate` — calling the MCP tools in-process. Each node handles a distinct step with its own error handling; a conditional edge after `validate` routes missing-field, out-of-scope, and error states straight to narration.
 - **Phase 1.6d — AIAP-format README**. Restructure the project documentation to align with AIAP's 8-section submission template, dual-purposing this work for the AI Apprenticeship Programme. — Target: mid-May
 - **Phase 2 — Docker + CI**. Containerise FastAPI, MCP server, and MLflow tracking. GitHub Actions for lint, type-check, test, and image build on every PR. — Target: June
 - **Phase 3 — DVC + Pandera + scheduled ingestion**. Version the training data, validate it, ingest fresh data.gov.sg releases monthly via scheduled CI. — Target: July
