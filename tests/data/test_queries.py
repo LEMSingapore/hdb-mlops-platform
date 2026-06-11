@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from data.queries import count_transactions, find_similar, load_all_transactions
+from data.queries import (
+    count_transactions,
+    find_similar,
+    find_similar_with_fallback,
+    load_all_transactions,
+)
 
 _EXPECTED_COLUMNS = {
     "id",
@@ -136,3 +141,38 @@ class TestFindSimilar:
     def test_missing_db_raises_file_not_found(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             find_similar("TAMPINES", "4 ROOM", 90.0, 1990, db_path=tmp_path / "none.db")
+
+
+class TestFindSimilarWithFallback:
+    def test_exact_match_reports_no_fallback(self, tiny_sqlite_db: Path) -> None:
+        # TAMPINES 4 ROOM has 8 rows; k=3 is satisfied without widening.
+        result = find_similar_with_fallback(
+            "TAMPINES", "4 ROOM", 92.0, 1990, k=3, db_path=tiny_sqlite_db
+        )
+        assert result.used_town_only_fallback is False
+        assert len(result.matches) == 3
+        assert (result.matches["flat_type"] == "4 ROOM").all()
+
+    def test_insufficient_exact_matches_reports_fallback(self, tiny_sqlite_db: Path) -> None:
+        # TAMPINES 5 ROOM has only 2 rows; k=5 widens to town-only.
+        result = find_similar_with_fallback(
+            "TAMPINES", "5 ROOM", 110.0, 1990, k=5, db_path=tiny_sqlite_db
+        )
+        assert result.used_town_only_fallback is True
+        assert len(result.matches) == 5
+        assert result.matches["flat_type"].nunique() > 1
+
+    def test_distance_column_present(self, tiny_sqlite_db: Path) -> None:
+        result = find_similar_with_fallback(
+            "TAMPINES", "4 ROOM", 90.0, 1990, k=3, db_path=tiny_sqlite_db
+        )
+        assert "distance" in result.matches.columns
+        assert result.matches["distance"].is_monotonic_increasing
+
+    def test_no_matches_returns_empty_with_fallback_flag(self, tiny_sqlite_db: Path) -> None:
+        # No transactions for this town; both queries return empty.
+        result = find_similar_with_fallback(
+            "WOODLANDS", "4 ROOM", 90.0, 1990, k=5, db_path=tiny_sqlite_db
+        )
+        assert result.used_town_only_fallback is True
+        assert len(result.matches) == 0
