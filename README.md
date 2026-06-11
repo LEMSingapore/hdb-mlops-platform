@@ -204,21 +204,22 @@ Both trained on 975,942 transactions with identical hyperparameters (`learning_r
 
 ## What's tested
 
-171 tests, run with `pytest`:
+239 tests, run with `pytest`:
 
 | Module | Tests | What it covers |
 |---|---:|---|
 | `tests/data/test_connection.py` | 5 | Context manager lifecycle, row_factory, env-var override, missing-DB error |
 | `tests/data/test_queries.py` | 18 | load_all_transactions, count_transactions, find_similar and find_similar_with_fallback (exact, fallback, edge cases) |
-| `tests/mcp_server/` | 19 | Tool registration and input schemas, plus one happy path per tool (predict, explain top-5, postal lookup, model info, similar transactions) |
-| `tests/serving/test_schemas.py` | 17 | Pydantic boundary conditions, validation errors, coercion rules |
-| `tests/serving/test_model_loader.py` | 16 | Alias resolution, atomic swap, `ExplainerBundle` consistency on failure |
-| `tests/serving/test_app.py` | 22 | All four endpoints, 503 guard, 422 validation, SHAP additivity |
+| `tests/mcp_server/` | 40 | Tool registration and input schemas, plus happy paths per tool (predict, explain top-5, postal lookup, model info, similar transactions) |
+| `tests/serving/test_schemas.py` | 18 | Pydantic boundary conditions, validation errors, coercion rules |
+| `tests/serving/test_model_loader.py` | 17 | Alias resolution, atomic swap, `ExplainerBundle` consistency on failure |
+| `tests/serving/test_app.py` | 19 | All four endpoints, 503 guard, 422 validation, SHAP additivity |
 | `tests/training/test_train.py` | 12 | End-to-end training from SQLite fixture, signature attached, alias set |
-| `tests/lookup/test_postal.py` | 14 | Postal resolution, town derivation, edge cases |
+| `tests/lookup/test_postal.py` | 15 | Postal resolution, town derivation, edge cases |
 | `tests/lookup/test_abbreviations.py` | 15 | Token-level expansion, idempotency, no substring collisions |
 | `tests/ui/form_app/` | 9 | API client error hierarchy, config from env |
-| `tests/ui/chat_app/` | 23 | Tool schemas, top-3 SHAP slice, missing-field elicitation, postal-first ordering |
+| `tests/ui/chat_app/` (agent + predictor) | 24 | Legacy tool-use loop schemas, top-3 SHAP slice, missing-field elicitation, postal-first ordering |
+| `tests/ui/chat_app/graph/` | 47 | GraphState, MCP client wrapper, the six nodes (parse and narrate with a mocked Anthropic client), branch routing, and end-to-end traversal against the real MCP tools |
 
 A lesson from this work: **passing tests don't mean the system works.** Pydantic v2 type bugs, environment-variable plumbing in subprocess models, and explainer initialisation paths all needed live smoke testing — three terminals, real curl, real chat — to catch issues that unit tests can't see.
 
