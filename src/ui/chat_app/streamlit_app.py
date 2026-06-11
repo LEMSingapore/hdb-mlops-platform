@@ -16,20 +16,31 @@ import asyncio
 import logging
 
 import streamlit as st
+from pydantic import ValidationError
 
 from ui.chat_app.config import ChatConfig
 from ui.chat_app.graph import GraphState, build_graph
 
 logger = logging.getLogger(__name__)
 
-_config = ChatConfig()
+# Load configuration through ChatConfig so the key resolves from either the
+# environment or a .env file at the project root — the whole point of Pydantic
+# Settings. Reading os.environ directly here would defeat that and report the
+# key as missing whenever it lives only in .env.
+_KEY_HELP = (
+    "Set `ANTHROPIC_API_KEY` in your environment, or add it to a `.env` "
+    "file in the project root:\n\n"
+    "```\nANTHROPIC_API_KEY=sk-ant-...\n```"
+)
+
+try:
+    _config = ChatConfig()
+except ValidationError as exc:
+    st.error(f"**Could not load chat configuration.**\n\n```\n{exc}\n```\n\n{_KEY_HELP}")
+    st.stop()
+
 if not _config.anthropic_api_key:
-    st.error(
-        "**ANTHROPIC_API_KEY is not set.** "
-        "Export it in the same shell before launching:\n\n"
-        "```\nexport ANTHROPIC_API_KEY=sk-ant-...\n"
-        "streamlit run src/ui/chat_app/streamlit_app.py\n```"
-    )
+    st.error(f"**ANTHROPIC_API_KEY is not set.** {_KEY_HELP}")
     st.stop()
 
 st.set_page_config(
