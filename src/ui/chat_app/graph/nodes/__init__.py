@@ -2,7 +2,7 @@
 
 Each module exposes a single ``run`` coroutine taking the current
 :class:`~ui.chat_app.graph.state.GraphState` and returning a dict of the fields
-it changed. ``parse`` and ``narrate`` are Day 1 stubs returning canonical data;
-``postal_lookup``, ``validate``, ``predict``, and ``explain`` are the real
-implementations.
+it changed. ``parse`` and ``narrate`` make Anthropic Claude Haiku calls;
+``postal_lookup``, ``predict``, and ``explain`` call the MCP tools; ``validate``
+is pure Python.
 """

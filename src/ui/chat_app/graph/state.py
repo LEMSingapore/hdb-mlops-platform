@@ -44,6 +44,10 @@ class GraphState(BaseModel):
     month: str | None = None
     postal_code: int | None = None
 
+    # Set by the parse node to explain an out_of_scope or error verdict, so the
+    # narrate node can decline with a reason rather than a generic message.
+    parse_reasoning: str | None = None
+
     # Output of the postal lookup (None unless a postal code was given and resolved).
     resolved_town: str | None = None
 

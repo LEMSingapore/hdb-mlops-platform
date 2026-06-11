@@ -15,10 +15,11 @@ REQUIRED_FIELDS = ("town", "flat_type", "floor_area_sqm", "lease_commence_date",
 async def run(state: GraphState) -> dict:
     """Set ``status`` and ``missing_fields`` from which model inputs are present.
 
-    Passes through unchanged if an earlier node already set ``status = "error"``,
-    so a tool fault upstream is not masked by a validation verdict.
+    Only runs when ``status == "pending"``. A terminal status set upstream — an
+    ``error`` from a tool fault or an ``out_of_scope`` verdict from the parse
+    node — passes through unchanged so a validation verdict cannot mask it.
     """
-    if state.status == "error":
+    if state.status != "pending":
         return {}
 
     present = {
