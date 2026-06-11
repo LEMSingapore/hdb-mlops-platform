@@ -2,7 +2,7 @@
 
 A production-style MLOps platform for predicting Singapore HDB resale prices, with a chat-driven user interface on top. The model trains on 30+ years of public resale transaction data, serves predictions and SHAP-based explanations through a FastAPI service, and is wrapped by a Claude Haiku agent that turns plain-English property descriptions into structured predictions with natural-language explanations of what's driving the price.
 
-> **Status (May 2026)** — Phases 1, 1.5, and 1.6a are complete. Phase 1.6a added the SQLite data layer: training now reads from `data/hdb.db` (built from the raw CSVs by `scripts/csv_to_sqlite.py`) instead of reading CSVs directly. The MCP server (Phase 1.6b) and LangGraph orchestration (Phase 1.6c) are next. See [What's next](#whats-next).
+> **Status (June 2026)** — Phases 1, 1.5, 1.6a, and 1.6b are complete. Phase 1.6b added the MCP server: the platform's prediction, explanation, postal lookup, model-info, and comparable-search capabilities are now callable as Model Context Protocol tools from Claude Desktop or any other MCP client. LangGraph orchestration (Phase 1.6c) is next. See [What's next](#whats-next).
 
 ## What this demonstrates
 
@@ -12,8 +12,9 @@ The interesting parts of this repo, with specifics:
 - **SHAP TreeExplainer wired into a `/explain` endpoint** with mathematical correctness asserted by test — `sum(feature_contributions) + base_value ≈ predicted_price` within 1 SGD.
 - **A deliberate 5.8% RMSE trade-off** to halve the form complexity. The model predicts on 5 fields the user can actually answer (town, flat type, floor area, lease year, transaction month) instead of 7 that include `flat_model` and `storey_range` — values most users don't know off the top of their heads. RMSE went from SGD 27,690 to SGD 29,296. Documented and intentional.
 - **Preprocessing baked into the sklearn `Pipeline`.** No training-serving feature pipeline duplication. The model artefact is end-to-end: raw input goes in, prediction comes out. A custom `MonthToFloatTransformer` converts `YYYY-MM` to fractional years inside the `ColumnTransformer`.
-- **Postal-code first chat UX.** Users type `"3 room flat in Tampines, 95 sqm, lease started 1985, postal 528003"` in plain English. The agent calls `lookup_postal_code` to resolve postal → town, then `predict_hdb_price` for the price, then `explain_hdb_price` and narrates the top 3 SHAP contributors back to the user in English.
-- **131 tests** across schemas, model loader, FastAPI endpoints, training pipeline, postal lookup, predictor, and chat agent. Pre-commit hooks enforce ruff, ruff-format, mypy, and a typed exception hierarchy in the API client.
+- **Postal-code first chat UX.** Users type `"3 room flat in Tampines, 95 sqm, lease started 1985, postal 522201"` in plain English. The agent calls `lookup_postal_code` to resolve postal → town, then `predict_hdb_price` for the price, then `explain_hdb_price` and narrates the top 3 SHAP contributors back to the user in English.
+- **MCP server exposing the platform to any LLM client.** Five tools — `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, `find_similar_transactions` — are served over the Model Context Protocol, so Claude Desktop or Cursor call the same prediction and explanation logic the Streamlit chat uses, with no per-client code. The server calls the platform's Python modules directly rather than HTTP-wrapping FastAPI: one process, shared in-memory model, no localhost dependency ([ADR 0003](docs/adr/0003-mcp-direct-imports-not-http.md)).
+- **171 tests** across schemas, model loader, FastAPI endpoints, MCP tools, training pipeline, postal lookup, predictor, and chat agent. Pre-commit hooks enforce ruff, ruff-format, mypy, and a typed exception hierarchy in the API client.
 - **Architecture Decision Records** under `docs/adr/` for choices that matter — alias-vs-stages, promotion threshold derivation, MLflow SPOF acknowledgement.
 
 ## Architecture
@@ -109,7 +110,7 @@ streamlit run src/ui/chat_app/streamlit_app.py
 
 Browser opens at `http://localhost:8501`. Try:
 
-> 3 room flat in Tampines, 95 sqm, lease started 1985, postal 528003
+> 3 room flat in Tampines, 95 sqm, lease started 1985, postal 522201
 
 ### Terminal 2 alternative — Form app (diagnostic)
 
@@ -119,15 +120,15 @@ streamlit run src/ui/form_app/streamlit_app.py
 
 Same endpoints, simpler UI — useful for debugging when the chat misbehaves.
 
-### Claude Desktop via MCP (Phase 1.6b — coming late May)
+### Claude Desktop via MCP
 
-Once the MCP server lands, configure Claude Desktop's `claude_desktop_config.json`:
+The MCP server runs without FastAPI — it loads the `@champion` model in-process. Configure Claude Desktop's `claude_desktop_config.json` to point at the project's virtualenv interpreter so the server runs with the project's dependencies:
 
 ```json
 {
   "mcpServers": {
     "hdb-mlops": {
-      "command": "python",
+      "command": "/absolute/path/to/hdb-mlops-platform/.venv/bin/python",
       "args": ["-m", "mcp_server"],
       "cwd": "/absolute/path/to/hdb-mlops-platform"
     }
@@ -135,11 +136,11 @@ Once the MCP server lands, configure Claude Desktop's `claude_desktop_config.jso
 }
 ```
 
-Then in Claude Desktop ask:
+Restart Claude Desktop, then ask:
 
 > What's the resale price for a 4-room in Tampines, 95 sqm, lease started 1985? And show me 10 similar recent transactions.
 
-Claude Desktop will call the MCP tools (`predict_price`, `explain_prediction`, `find_similar_transactions`) and synthesise an answer. Same model, same registry, same explainer that the Streamlit chat uses — exposed through a different protocol.
+Claude Desktop calls the MCP tools (`predict_price`, `explain_prediction`, `find_similar_transactions`) and synthesises an answer. Same model, same registry, same explainer that the Streamlit chat uses — exposed through a different protocol.
 
 ### Direct API access
 
@@ -156,6 +157,7 @@ curl -s -X POST http://localhost:8000/predict \
 src/
 ├── training/        Training script, sklearn pipeline, MLflow logging
 ├── serving/         FastAPI app, model loader, schemas, SHAP integration
+├── mcp_server/      MCP tools over the platform — predict, explain, lookup, info, similar
 ├── data/            SQLite data layer — connection, queries, find_similar
 ├── lookup/          Postal code resolution, street→town mapping
 └── ui/
@@ -175,7 +177,7 @@ data/
 └── lookups/         Postal code reference table (committed, 700KB)
 ```
 
-Coming in Phase 1.6: `src/mcp_server/` (MCP tools — Phase 1.6b) and a LangGraph state machine inside `src/ui/chat_app/` (Phase 1.6c).
+Coming in Phase 1.6: a LangGraph state machine inside `src/ui/chat_app/` (Phase 1.6c) that orchestrates the MCP tools.
 
 ## Design decisions
 
@@ -187,7 +189,7 @@ The choices most worth defending in an interview, with PR links to the full reas
 - **Background polling for model reload, not restart** ([PR #8](https://github.com/LEMSingapore/hdb-mlops-platform/pull/8)). The serving thread polls the registry every 60s and atomically swaps the in-memory model when `@champion` points to a new version. Zero downtime, no admin endpoint needed.
 - **`ExplainerBundle` as an atomic swap unit** ([PR #13](https://github.com/LEMSingapore/hdb-mlops-platform/pull/13)). Bundling explainer + preprocessor + feature names rather than tracking them separately makes "model and explainer must always be consistent" a structural invariant, not a documented convention.
 - **`_APIConfig` Protocol over inheritance** ([PR #21](https://github.com/LEMSingapore/hdb-mlops-platform/pull/21)). Form and chat apps both use the same `APIClient`. Rather than forcing a shared `BaseConfig`, the client accepts anything matching a `Protocol`. Structural typing, no coupling between UI subdirectories.
-- **MCP separates tool surface from orchestration** ([Phase 1.6b](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22)). LangGraph orchestrates *this* application's reasoning flow; MCP exposes tools that any LLM client can call. Same prediction and explanation logic serves both the bundled chat app and external clients (Claude Desktop, Cursor) without duplicate code per client.
+- **MCP separates tool surface from orchestration** ([ADR 0003](docs/adr/0003-mcp-direct-imports-not-http.md)). LangGraph orchestrates *this* application's reasoning flow; MCP exposes tools that any LLM client can call. Same prediction and explanation logic serves both the bundled chat app and external clients (Claude Desktop, Cursor) without duplicate code per client. The server calls the platform's modules directly rather than HTTP-wrapping FastAPI.
 - **Pydantic v2 strict mode caught a silent bug**. The original schemas declared `model_version: str`, MLflow returned `int`. Strict mode rejected the coercion and surfaced the mismatch immediately rather than letting it fail at runtime in production.
 
 ## Models
@@ -201,12 +203,13 @@ Both trained on 975,942 transactions with identical hyperparameters (`learning_r
 
 ## What's tested
 
-148 tests, run with `pytest`:
+171 tests, run with `pytest`:
 
 | Module | Tests | What it covers |
 |---|---:|---|
 | `tests/data/test_connection.py` | 5 | Context manager lifecycle, row_factory, env-var override, missing-DB error |
-| `tests/data/test_queries.py` | 14 | load_all_transactions, count_transactions, find_similar (exact, fallback, edge cases) |
+| `tests/data/test_queries.py` | 18 | load_all_transactions, count_transactions, find_similar and find_similar_with_fallback (exact, fallback, edge cases) |
+| `tests/mcp_server/` | 19 | Tool registration and input schemas, plus one happy path per tool (predict, explain top-5, postal lookup, model info, similar transactions) |
 | `tests/serving/test_schemas.py` | 17 | Pydantic boundary conditions, validation errors, coercion rules |
 | `tests/serving/test_model_loader.py` | 16 | Alias resolution, atomic swap, `ExplainerBundle` consistency on failure |
 | `tests/serving/test_app.py` | 22 | All four endpoints, 503 guard, 422 validation, SHAP additivity |
@@ -223,7 +226,7 @@ A lesson from this work: **passing tests don't mean the system works.** Pydantic
 The [build plan](docs/build-plan.md) tracks delivery in phases. Phases 1 and 1.5 are complete. The remainder, in order:
 
 - **Phase 1.6a — SQLite data layer** — Complete. `src/data/` wraps the CSV data in a queryable SQLite database. Training reads from `data/hdb.db` via `load_all_transactions()`. `find_similar()` is implemented and ready for the Phase 1.6b MCP tool.
-- **Phase 1.6b — MCP server** ([#22](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22)). Expose `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, and `find_similar_transactions` as MCP tools so the platform is consumable from Claude Desktop and any other MCP client. — Target: late May
+- **Phase 1.6b — MCP server** ([#22](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22)). Complete. `predict_price`, `explain_prediction`, `lookup_postal_code`, `get_model_info`, and `find_similar_transactions` are exposed as MCP tools in `src/mcp_server/`, consumable from Claude Desktop and any other MCP client. The server calls the platform's modules directly rather than HTTP-wrapping FastAPI ([ADR 0003](docs/adr/0003-mcp-direct-imports-not-http.md)).
 - **Phase 1.6c — LangGraph orchestration**. Replace the chat agent's direct tool-use loop with a LangGraph state machine that calls MCP tools. Each node handles a distinct step (parse, lookup, validate, predict, explain, narrate) with retry and error handling. — Target: late May
 - **Phase 1.6d — AIAP-format README**. Restructure the project documentation to align with AIAP's 8-section submission template, dual-purposing this work for the AI Apprenticeship Programme. — Target: mid-May
 - **Phase 2 — Docker + CI**. Containerise FastAPI, MCP server, and MLflow tracking. GitHub Actions for lint, type-check, test, and image build on every PR. — Target: June
@@ -235,7 +238,6 @@ The [build plan](docs/build-plan.md) tracks delivery in phases. Phases 1 and 1.5
 Open issues:
 
 - [#10](https://github.com/LEMSingapore/hdb-mlops-platform/issues/10) — Pin model serving environment to match training environment. Phase 2 work.
-- [#22](https://github.com/LEMSingapore/hdb-mlops-platform/issues/22) — MCP server (Phase 1.6b).
 
 ## Out of scope (deliberately)
 
