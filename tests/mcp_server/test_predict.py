@@ -63,11 +63,35 @@ class TestExplainPrediction:
         data = result.structured_content
         assert data["model_version"] == 7
         assert isinstance(data["base_value"], float)
-        # The fixture pipeline yields nine transformed features; the tool returns
-        # the top five by absolute contribution.
+        # The fixture pipeline's nine raw dummies aggregate to five features —
+        # two active categoricals plus three non-categorical features — so the
+        # top five returns one entry per source feature.
         assert len(data["top_contributors"]) == 5
         for entry in data["top_contributors"]:
             assert set(entry.keys()) == {"feature", "contribution"}
+
+    async def test_top_contributors_have_one_entry_per_categorical(self, stub_loader) -> None:
+        async with Client(mcp) as client:
+            result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)
+        labels = [entry["feature"] for entry in result.structured_content["top_contributors"]]
+        # One-hot dummies are aggregated, so a categorical column never appears
+        # more than once in the human-facing view.
+        assert sum(label.startswith("Town:") for label in labels) <= 1
+        assert sum(label.startswith("Flat type:") for label in labels) <= 1
+
+    async def test_top_contributors_name_active_category_not_inactive(self, stub_loader) -> None:
+        async with Client(mcp) as client:
+            result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)
+        labels = [entry["feature"] for entry in result.structured_content["top_contributors"]]
+        # The active categories for this row are present; inactive dummies that
+        # the raw top-N used to surface (e.g. a 3-room entry for a 4-room flat)
+        # are not.
+        assert "Town: Tampines" in labels
+        assert "Flat type: 4-room" in labels
+        town_labels = [label for label in labels if label.startswith("Town:")]
+        flat_labels = [label for label in labels if label.startswith("Flat type:")]
+        assert town_labels == ["Town: Tampines"]
+        assert flat_labels == ["Flat type: 4-room"]
 
     async def test_top_contributors_carry_human_readable_labels(self, stub_loader) -> None:
         async with Client(mcp) as client:
@@ -84,8 +108,12 @@ class TestExplainPrediction:
         async with Client(mcp) as client:
             result = await client.call_tool("explain_prediction", _TAMPINES_4ROOM)
         contributions = result.structured_content["feature_contributions"]
-        # The full raw-keyed dict stays available for programmatic consumers.
+        # The full per-dummy raw view stays available for programmatic
+        # consumers — including inactive dummies the aggregation collapses out
+        # of top_contributors (this row is a 4-room, yet the 3-room dummy
+        # remains here).
         assert "num__floor_area_sqm" in contributions
+        assert "cat__flat_type_3 ROOM" in contributions
         assert all(key.startswith(("cat__", "num__", "month__")) for key in contributions)
         assert all(isinstance(value, float) for value in contributions.values())
 

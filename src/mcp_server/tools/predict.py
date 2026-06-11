@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from mcp_server.config import MCPConfig
-from mcp_server.formatting import format_feature_label
+from mcp_server.formatting import aggregate_one_hot_contributions, format_feature_label
 from serving.config import ServingConfig
 from serving.model_loader import ModelLoader
 
@@ -146,15 +146,20 @@ def explain_prediction(
 ) -> ExplanationResult:
     """Explain a single resale price prediction with SHAP feature contributions.
 
-    Returns the five contributors with the largest absolute SHAP value, sorted
-    descending. By construction the full set of contributions plus base_value
-    sums to the predicted price; the top five are the dominant drivers.
+    The ``top_contributors`` list holds the five highest-magnitude contributors
+    after aggregating one-hot categoricals back to their source feature. Each
+    entry is keyed by the input row's active category — for a 4-room flat the
+    town's dummies collapse to a single "Town: ..." entry and the flat-type
+    dummies to "Flat type: 4-room", rather than surfacing inactive categories
+    like a "3-room" entry whose SHAP value is a counterfactual, not this flat's
+    contribution. The labels are human-readable and suitable for direct
+    presentation: an LLM client can narrate them without knowing what the
+    sklearn ColumnTransformer did internally.
 
-    The ``top_contributors`` list contains human-readable labels suitable for
-    direct presentation — an LLM client can narrate them without knowing what
-    the sklearn ColumnTransformer did internally. The ``feature_contributions``
-    dict contains every contribution keyed by its raw pipeline feature name,
-    suitable for programmatic consumers that need exact identifiers.
+    The ``feature_contributions`` dict holds the full per-dummy SHAP
+    decomposition keyed by raw pipeline feature name — every one-hot dummy has
+    its own entry, including zero-valued ones — for programmatic consumers that
+    want the complete decomposition.
 
     Args:
         town: HDB town, e.g. "TAMPINES". Case-insensitive.
@@ -182,18 +187,20 @@ def explain_prediction(
     base_value = float(np.asarray(bundle.explainer.expected_value).item())
     contributions = dict(zip(bundle.feature_names, shap_values[0].tolist(), strict=False))
 
+    # Normalise the categorical values to match the encoder's vocabulary (the
+    # serving layer upper-cases town and flat_type) so the active one-hot dummy
+    # can be identified during aggregation.
     input_values = {
-        "town": town,
-        "flat_type": flat_type,
+        "town": town.strip().upper(),
+        "flat_type": flat_type.strip().upper(),
         "floor_area_sqm": floor_area_sqm,
         "lease_commence_date": lease_commence_date,
         "month": month,
     }
+    aggregated = aggregate_one_hot_contributions(contributions, input_values)
     top_contributors: list[FeatureContribution] = [
-        {"feature": format_feature_label(feature, input_values), "contribution": value}
-        for feature, value in sorted(
-            contributions.items(), key=lambda kv: abs(kv[1]), reverse=True
-        )[:5]
+        {"feature": format_feature_label(name, input_values), "contribution": value}
+        for name, value in sorted(aggregated.items(), key=lambda kv: abs(kv[1]), reverse=True)[:5]
     ]
 
     version = loader.get_version()

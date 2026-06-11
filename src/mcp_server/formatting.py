@@ -13,9 +13,12 @@ Claude Desktop today, the Phase 1.6c LangGraph orchestrator tomorrow — gets
 readable labels without re-deriving what the pipeline did internally.
 """
 
+import logging
 import re
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Exact-match labels for the numeric pass-throughs and the month transformer.
 # Each maps a raw feature name to a function of the original five-field input
@@ -88,3 +91,77 @@ def format_feature_label(raw_name: str, input_values: dict[str, Any]) -> str:
         return f"{friendly_label}: {formatter(value)}"
 
     return raw_name
+
+
+def aggregate_one_hot_contributions(
+    raw_contributions: dict[str, float],
+    input_values: dict[str, Any],
+) -> dict[str, float]:
+    """Group one-hot SHAP contributions by their source categorical column.
+
+    SHAP assigns a contribution to every one-hot dummy, including the dummies
+    whose value is 0 for this row. Selecting the top-N by absolute SHAP value
+    over the raw per-dummy contributions surfaces inactive categories — for a
+    4-room flat the top contributors can include ``cat__flat_type_3 ROOM``,
+    which a human reads as "being a 3-room added to the price" when it actually
+    means "switching this flat to a 3-room would change the price by that much".
+    That counterfactual reading is the wrong contract for a human-facing label.
+    Aggregating the dummies of a column into a single signed sum, attributed to
+    the row's active category, restores the intuitive "what this flat's town /
+    flat type contributes" reading.
+
+    For raw contributions like::
+
+        {"cat__town_TAMPINES": 34666, "cat__town_BEDOK": -1030, ...,
+         "num__floor_area_sqm": 15807, ...}
+
+    and an input dict ``{"town": "TAMPINES", "flat_type": "4 ROOM", ...}``,
+    each one-hot group collapses to a single entry keyed by its active dummy
+    (the one matching the input value), carrying the signed sum of every dummy
+    in the group. Numeric and month features pass through unchanged::
+
+        {"cat__town_TAMPINES": <sum of all town dummies>,
+         "cat__flat_type_4 ROOM": <sum of all flat_type dummies>,
+         "num__floor_area_sqm": 15807,
+         "num__lease_commence_date": -20353,
+         "month__float_time_series": 246378}
+
+    Args:
+        raw_contributions: Per-feature SHAP contributions keyed by raw pipeline
+            feature name, as produced by ``get_feature_names_out``.
+        input_values: The prediction input. The categorical values must match
+            the encoder's vocabulary (e.g. "TAMPINES", "4 ROOM") so the active
+            dummy can be identified.
+
+    Returns:
+        A contribution dict with one-hot groups collapsed to their active dummy.
+        If a group's active dummy is absent — an input value outside the
+        training vocabulary — that group falls back to its per-dummy entries so
+        no contribution is silently dropped.
+    """
+    grouped: dict[str, dict[str, float]] = {column: {} for column in _CATEGORICAL}
+    aggregated: dict[str, float] = {}
+
+    for name, value in raw_contributions.items():
+        match = _CAT_PATTERN.match(name)
+        if match is None:
+            aggregated[name] = value
+            continue
+        grouped[match.group(1)][name] = value
+
+    for column, dummies in grouped.items():
+        if not dummies:
+            continue
+        active_name = f"cat__{column}_{input_values.get(column)}"
+        if active_name in dummies:
+            aggregated[active_name] = sum(dummies.values())
+        else:
+            logger.debug(
+                "No active one-hot dummy %r for column %r in SHAP contributions; "
+                "falling back to per-dummy entries.",
+                active_name,
+                column,
+            )
+            aggregated.update(dummies)
+
+    return aggregated
