@@ -1,5 +1,7 @@
 # HDB Resale Price Predictor — MLOps Platform
 
+![CI](https://github.com/LEMSingapore/hdb-mlops-platform/actions/workflows/ci.yml/badge.svg)
+
 A production-style MLOps platform for predicting Singapore HDB resale prices, with a chat-driven user interface on top. The model trains on 30+ years of public resale transaction data, serves predictions and SHAP-based explanations through a FastAPI service, and is wrapped by a Claude Haiku agent that turns plain-English property descriptions into structured predictions with natural-language explanations of what's driving the price.
 
 > **Status (June 2026)** — Phases 1, 1.5, 1.6a, 1.6b, and 1.6c are complete. Phase 1.6b added the MCP server: prediction, explanation, postal lookup, model-info, and comparable-search are callable as Model Context Protocol tools from Claude Desktop or any other MCP client. Phase 1.6c replaced the chat agent's Anthropic tool-use loop with a LangGraph orchestration graph that calls those MCP tools as a deterministic state machine. See [What's next](#whats-next).
@@ -212,6 +214,12 @@ curl -s -X POST http://localhost:8000/predict \
 Expect `predicted_resale_price` around `586888` with `model_version: 1`. The MLflow UI is at [http://localhost:5000](http://localhost:5000). Tear down with `docker compose down`.
 
 On macOS, port 5000 is taken by the AirPlay Receiver by default — either turn it off under System Settings, General, AirDrop & Handoff, or remap the host port in a local compose override. The container-internal `http://mlflow:5000` that FastAPI uses is unaffected either way.
+
+## Continuous integration
+
+GitHub Actions runs the whole platform end-to-end on every pull request and every push to main ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Two jobs run in sequence. The first runs pre-commit — ruff, ruff-format, mypy — then the full pytest suite. Only if that passes does the second build the FastAPI image with Buildx and the GitHub Actions layer cache, bring the compose stack up, wait for both healthchecks, and assert that `POST /predict` against the running container returns the expected response shape. Gating the expensive Docker job behind the cheap lint-and-test job means a red unit test never costs a four-minute image build. Concurrency is set to cancel in-progress runs, so a rapid series of commits on a PR only pays for the latest.
+
+CI cannot mount the production registry — the training data is not in the repo and the real champion artifact is too large to commit — so it seeds a tiny synthetic `@champion` before the smoke test, built through the same pipeline and migrated to the same `mlflow-artifacts:` proxy URIs as the real model. The smoke test therefore exercises the real model-load, artifact-proxy, and SHAP paths inside containers, asserting response shape rather than an exact price. The full reasoning, including the registry options I rejected, is in [docs/adr/0007-ci-workflow-and-registry-strategy.md](docs/adr/0007-ci-workflow-and-registry-strategy.md). Runtime is roughly seven to eight minutes cold and three to four minutes warm; image push to GHCR is deferred to Phase 6, when there is a deploy target to consume it.
 
 ## What lives where
 
