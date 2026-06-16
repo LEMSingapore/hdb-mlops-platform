@@ -1,0 +1,56 @@
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.13.0
+    ports:
+      - "5000:5000"
+    # MLflow 3 rejects requests whose Host header is not on its DNS-rebinding
+    # allowlist, which defaults to localhost only. FastAPI reaches the server as
+    # http://mlflow:5000, so the service name must be allowlisted explicitly.
+    # localhost stays on the list because the healthcheck probes localhost:5000.
+    # Setting the env var replaces the default list, so both entries are required.
+    environment:
+      MLFLOW_SERVER_ALLOWED_HOSTS: "mlflow:5000,localhost:5000,127.0.0.1:5000"
+    volumes:
+      - ./mlflow.db:/mlflow/mlflow.db
+      - ./mlruns:/mlflow/artifacts
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+    # The official MLflow image ships no curl, so the healthcheck uses the
+    # Python interpreter already present in the image. urlopen exits non-zero
+    # on any status other than 2xx, which is the signal Compose needs.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request, sys; sys.exit(0) if urllib.request.urlopen("http://localhost:5000/health").status == 200 else sys.exit(1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  fastapi:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    # python:3.12-slim ships no curl either; reuse the interpreter-based probe.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request, sys; sys.exit(0) if urllib.request.urlopen("http://localhost:8000/health").status == 200 else sys.exit(1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
