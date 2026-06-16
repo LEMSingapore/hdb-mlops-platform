@@ -25,7 +25,9 @@ Splitting dependency install from the source copy is a caching decision. Depende
 
 The trade-off I am accepting in Session A: MLflow stores artifact locations as absolute filesystem paths in `mlflow.db`. Bind-mounting the host's `mlruns/` only resolves if the directory is mounted at the same absolute path the database recorded. That is fragile and host-specific — it is exactly the friction Session B removes by running an MLflow tracking server, where FastAPI fetches artifacts over HTTP through the server's artifact proxy and never touches a host path. Session A proves the service containerises; Session B makes the data plane portable.
 
-`MLFLOW_TRACKING_URI` defaults to the bind-mounted SQLite file so the image runs standalone. Session B overrides it to `http://mlflow:5000` via docker-compose, with no image rebuild — the registry endpoint is configuration, not a baked-in constant.
+Session B has since landed and done exactly that — see [ADR 0006](0006-mlflow-tracking-server-as-compose-service.md). It also established that `--serve-artifacts` does not rewrite absolute paths already in the database, so the registry needed a one-time migration to `mlflow-artifacts:` proxy URIs on top of the tracking-server topology.
+
+`MLFLOW_TRACKING_URI` now defaults to `http://mlflow:5000` so the image runs correctly under compose out of the box; standalone local runs override it via shell env or `.env`, with no image rebuild — the registry endpoint is configuration, not a baked-in constant.
 
 ## Alternatives considered
 
