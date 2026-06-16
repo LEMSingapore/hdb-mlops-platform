@@ -1,0 +1,34 @@
+# Version control and tooling caches
+.git/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Secrets and local environment
+.env
+.env.local
+
+# Not needed to build or run the serving image
+tests/
+docs/
+notebooks/
+scripts/
+infra/
+data/
+
+# Provided at runtime via bind mounts (Session A) or the tracking server
+# (Session B) — never baked into the image
+mlruns/
+mlartifacts/
+mlflow.db
+mlflow.db-journal
+
+# Editor and OS noise
+.DS_Store
+.vscode/
+.idea/
+.claude/

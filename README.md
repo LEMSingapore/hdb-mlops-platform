@@ -152,6 +152,36 @@ curl -s -X POST http://localhost:8000/predict \
   | python -m json.tool
 ```
 
+### Try it via Docker (local)
+
+Phase 2 Session A containerises the FastAPI service as a multi-stage image. Build it:
+
+```bash
+docker build -t hdb-mlops:dev .
+```
+
+Run the container, bind-mounting your local MLflow registry. MLflow records artifact locations as absolute paths in `mlflow.db`, so `mlruns/` is mounted at the *same absolute path* it occupies on the host — that is what lets the in-container model loader resolve the `@champion` artifacts:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v "$(pwd)/mlflow.db:/app/mlflow.db" \
+  -v "$(pwd)/mlruns:$(pwd)/mlruns" \
+  hdb-mlops:dev
+```
+
+The container spawns the background polling thread and loads `@champion` on startup — wait for the "Loaded hdb-predictor version N" log line. Then, from another terminal:
+
+```bash
+curl -s -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"town": "TAMPINES", "flat_type": "4 ROOM", "floor_area_sqm": 95.0, "lease_commence_date": 1985, "month": "2024-06"}' \
+  | python -m json.tool
+```
+
+Expect `predicted_resale_price` around `586900` with `model_version: 7`.
+
+Mounting the host's SQLite file and `mlruns/` directly is deliberately a Session A stopgap. Because artifact locations are absolute host paths, this run command is host-specific — fragile by design. Session B replaces it with `docker-compose` and a containerised MLflow tracking server, where FastAPI fetches artifacts over HTTP through the server's artifact proxy and never touches a host path. Session C adds GitHub Actions CI. See [docs/phase-2-design.md](docs/phase-2-design.md) and [docs/adr/0005-multi-stage-dockerfile-with-uv.md](docs/adr/0005-multi-stage-dockerfile-with-uv.md).
+
 ## What lives where
 
 ```
