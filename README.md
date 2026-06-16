@@ -180,7 +180,38 @@ curl -s -X POST http://localhost:8000/predict \
 
 Expect `predicted_resale_price` around `586900` with `model_version: 7`.
 
-Mounting the host's SQLite file and `mlruns/` directly is deliberately a Session A stopgap. Because artifact locations are absolute host paths, this run command is host-specific — fragile by design. Session B replaces it with `docker-compose` and a containerised MLflow tracking server, where FastAPI fetches artifacts over HTTP through the server's artifact proxy and never touches a host path. Session C adds GitHub Actions CI. See [docs/phase-2-design.md](docs/phase-2-design.md) and [docs/adr/0005-multi-stage-dockerfile-with-uv.md](docs/adr/0005-multi-stage-dockerfile-with-uv.md).
+Mounting the host's SQLite file and `mlruns/` directly is deliberately a Session A stopgap. Because artifact locations are absolute host paths, this run command is host-specific — fragile by design. The "Try it via Docker Compose" section below replaces it with the portable two-service story. Session C adds GitHub Actions CI. See [docs/phase-2-design.md](docs/phase-2-design.md) and [docs/adr/0005-multi-stage-dockerfile-with-uv.md](docs/adr/0005-multi-stage-dockerfile-with-uv.md).
+
+### Try it via Docker Compose
+
+Compose brings up the platform the way a real deployment runs it: FastAPI as one service, MLflow as a separate tracking server on port 5000, talking over HTTP. FastAPI fetches model artifacts through the tracking server's artifact proxy and never reads the registry database or a host path directly — the fragility of the Session A bind-mount is gone. See [docs/adr/0006-mlflow-tracking-server-as-compose-service.md](docs/adr/0006-mlflow-tracking-server-as-compose-service.md).
+
+One-time migration if your `mlflow.db` was built by local-process MLflow. MLflow records artifact locations as absolute host paths, which the containerised tracking server cannot serve. Rewrite them to portable `mlflow-artifacts:` proxy URIs once — the script is idempotent:
+
+```bash
+python scripts/migrate_artifact_paths_to_proxy.py
+```
+
+Then bring the stack up:
+
+```bash
+docker compose up -d --build
+```
+
+Wait for both services to report healthy, then predict against the FastAPI container:
+
+```bash
+docker compose ps
+
+curl -s -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"town": "TAMPINES", "flat_type": "4 ROOM", "floor_area_sqm": 95.0, "lease_commence_date": 1985, "month": "2024-06"}' \
+  | python -m json.tool
+```
+
+Expect `predicted_resale_price` around `586888` with `model_version: 1`. The MLflow UI is at [http://localhost:5000](http://localhost:5000). Tear down with `docker compose down`.
+
+On macOS, port 5000 is taken by the AirPlay Receiver by default — either turn it off under System Settings, General, AirDrop & Handoff, or remap the host port in a local compose override. The container-internal `http://mlflow:5000` that FastAPI uses is unaffected either way.
 
 ## What lives where
 

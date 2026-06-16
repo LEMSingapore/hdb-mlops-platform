@@ -33,9 +33,12 @@ WORKDIR /app
 
 COPY src/ /app/src/
 
-# Defaults to the SQLite registry bind-mounted at runtime. Session B overrides
-# this to point at the containerised MLflow tracking server over HTTP.
-ENV MLFLOW_TRACKING_URI=sqlite:////app/mlflow.db
+# Defaults to the containerised MLflow tracking server reachable on the compose
+# network. FastAPI fetches model artifacts over HTTP through the server's
+# artifact proxy and never reads the SQLite file or a host path directly. Local
+# standalone runs override this via shell env or .env. See
+# docs/adr/0006-mlflow-tracking-server-as-compose-service.md.
+ENV MLFLOW_TRACKING_URI=http://mlflow:5000
 
 EXPOSE 8000
 
