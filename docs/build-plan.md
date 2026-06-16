@@ -98,6 +98,8 @@ Each phase has explicit acceptance criteria — a reviewer should be able to ver
 
 ### Phase 2 — Docker + Forgejo Actions CI (6-8 hours)
 
+**Status: complete** (Sessions A #37, B #38, C #41). Three deliberate deltas from the plan below, each recorded in an ADR. The MLflow backend stayed on SQLite rather than moving to Postgres + MinIO — the stack runs a single tracking server and a single FastAPI replica, so there are no concurrent writers, and the Postgres swap is the documented upgrade if that ever changes ([ADR 0006](adr/0006-mlflow-tracking-server-as-compose-service.md)). CI runs on GitHub Actions, not Forgejo — the workflows transfer 1:1, so this is the reversible convenience choice the note below anticipated. And CI verifies the image builds and runs end-to-end but does not push it to a registry; the push has no consumer until there is a deploy target, so it is deferred to Phase 6 ([ADR 0007](adr/0007-ci-workflow-and-registry-strategy.md)). CI seeds a synthetic `@champion` for its compose smoke test because the real artifact is too large to commit and the training data is not on the runner.
+
 **Scope:** Containerise everything. Wire up CI.
 
 **Deliverables:**
