@@ -1,0 +1,50 @@
+# Build-context ignore for Dockerfile.chat.
+#
+# BuildKit uses this file in place of .dockerignore when the build targets
+# Dockerfile.chat (it does not merge the two), so the full ignore list is
+# reproduced here. The one deliberate difference from .dockerignore: the chat
+# keeps data/lookups/ in the context, because lookup.postal loads
+# data/lookups/postal_codes.csv at import. Everything else under data/ stays
+# excluded — above all the 162 MB hdb.db, which only the unused find_similar
+# tool touches.
+
+# Version control and tooling caches
+.git/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Secrets and local environment — the API key reaches the container through the
+# compose environment, never baked into the image
+.env
+.env.local
+
+# Not needed to build or run the chat image
+tests/
+docs/
+notebooks/
+scripts/
+infra/
+
+# Heavy or runtime-only parts of data/. data/lookups/ is intentionally NOT listed
+# here so the postal_codes.csv the lookup tool needs stays in the build context.
+data/hdb.db
+data/*.db-journal
+data/raw/
+data/processed/
+
+# Provided at runtime by the tracking server — never baked into the image
+mlruns/
+mlartifacts/
+mlflow.db
+mlflow.db-journal
+
+# Editor and OS noise
+.DS_Store
+.vscode/
+.idea/
+.claude/

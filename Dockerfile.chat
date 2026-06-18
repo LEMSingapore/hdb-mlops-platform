@@ -1,0 +1,61 @@
+# Multi-stage build for the Streamlit chat UI.
+#
+# Mirrors the FastAPI Dockerfile: a builder stage installs runtime dependencies
+# into an isolated virtualenv with uv, and the runtime stage copies only that
+# virtualenv plus the application source. The chat bundles more than the API —
+# it imports the MCP server in-process (src/ui/chat_app -> mcp_server.server),
+# which pulls in the lookup, serving and data packages — but the dependency set
+# is identical because the whole project shares one pyproject.toml. See
+# docs/adr/0005-multi-stage-dockerfile-with-uv.md.
+
+FROM python:3.12-slim AS builder
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Only pyproject.toml is needed to resolve and install runtime dependencies.
+# Isolating this layer keeps the cache warm across source-only rebuilds, exactly
+# as in the FastAPI Dockerfile.
+COPY pyproject.toml ./
+RUN uv venv /opt/venv && \
+    VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
+
+FROM python:3.12-slim
+
+COPY --from=builder /opt/venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY src/ /app/src/
+
+# The chat resolves postal codes through the in-process MCP lookup tool, which
+# imports lookup.postal. That module loads data/lookups/postal_codes.csv at
+# import time relative to the repo root (parents[2] of src/lookup/postal.py,
+# i.e. /app here), so the file must sit at /app/data/lookups/. It is the only
+# part of data/ the chat needs — the 162 MB SQLite transactions DB feeds the
+# find_similar tool, which the live graph never calls, and is excluded by
+# Dockerfile.chat.dockerignore. Without this CSV the chat would crash on
+# startup, since the load happens at import and is not behind the graph's
+# graceful-degradation path.
+COPY data/lookups/ /app/data/lookups/
+
+# Defaults to the containerised MLflow tracking server on the compose network.
+# The chat loads the @champion model in-process via the MCP predict/explain
+# tools, fetching artifacts over the server's HTTP proxy — never a host path.
+# See docs/adr/0006-mlflow-tracking-server-as-compose-service.md.
+ENV MLFLOW_TRACKING_URI=http://mlflow:5000
+
+EXPOSE 8501
+
+# --server.address 0.0.0.0 makes Streamlit reachable from Caddy over the compose
+# network. No --app-dir flag exists for streamlit, so PYTHONPATH puts /app/src on
+# the import path, mirroring how the FastAPI image resolves "serving.app".
+ENV PYTHONPATH=/app/src
+
+CMD ["streamlit", "run", "src/ui/chat_app/streamlit_app.py", \
+     "--server.port", "8501", "--server.address", "0.0.0.0"]
