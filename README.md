@@ -6,6 +6,10 @@ A production-style MLOps platform for predicting Singapore HDB resale prices, wi
 
 > **Status (June 2026)** — Phases 1, 1.5, 1.6a, 1.6b, and 1.6c are complete. Phase 1.6b added the MCP server: prediction, explanation, postal lookup, model-info, and comparable-search are callable as Model Context Protocol tools from Claude Desktop or any other MCP client. Phase 1.6c replaced the chat agent's Anthropic tool-use loop with a LangGraph orchestration graph that calls those MCP tools as a deterministic state machine. See [What's next](#whats-next).
 
+## Live demo
+
+The platform is deployed at **https://hdb-mlops.duckdns.org**, with `POST /predict` and `POST /explain` reachable over HTTPS. FastAPI runs behind a Caddy reverse proxy that terminates TLS; MLflow stays internal to the compose network. This is an MVP demo deployment on a single small box — not a production deployment — so treat it as a clickable proof point rather than an SLA-backed service.
+
 ## What this demonstrates
 
 The interesting parts of this repo, with specifics:
