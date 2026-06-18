@@ -10,3 +10,18 @@ hdb-mlops.duckdns.org {
 	# follow-up. FastAPI carries no LLM cost exposure, so the only exposure here
 	# is CPU, not spend.
 }
+
+hdb-mlops-chat.duckdns.org {
+	# Streamlit relies on a WebSocket (/_stcore/stream) for all client-server
+	# interaction. Caddy's reverse_proxy detects the Upgrade header and proxies
+	# the WebSocket transparently, so a plain reverse_proxy is sufficient — no
+	# explicit @websocket matcher or header handling is needed on this version.
+	reverse_proxy chat:8501
+
+	encode gzip
+
+	# Rate limiting omitted for the same reason as the main site: it needs an
+	# xcaddy custom build (tracked in issue #34). The LLM cost exposure on this
+	# surface is contained instead by the budget-capped Anthropic workspace and
+	# the chat's graceful degradation when the cap is hit.
+}

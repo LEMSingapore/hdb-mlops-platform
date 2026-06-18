@@ -57,6 +57,40 @@ services:
       retries: 5
       start_period: 10s
 
+  chat:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat
+    # No host port mapping: like fastapi, the chat is reached only through Caddy
+    # over the compose network as http://chat:8501. Publishing it to the host
+    # would bypass ufw, leaving the Streamlit port exposed behind only the cloud
+    # firewall. Caddy terminates TLS and is the sole public surface.
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Read from the shell environment or compose's auto-loaded .env, defaulting
+      # to empty. The :- default means the service still starts with no key
+      # present, running in graceful-degraded mode — the parse and narrate nodes
+      # already catch any Anthropic failure and fall back to fixed messages. This
+      # matters for the deploy sequence: the stack comes up first, the key lands
+      # on the box afterwards. Using `environment:` rather than `env_file: .env`
+      # also avoids the missing-file failure tracked in issue #29.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    # python:3.12-slim ships no curl; reuse the interpreter-based probe pattern.
+    # Streamlit exposes /_stcore/health, which returns 200 once the server is up.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request, sys; sys.exit(0) if urllib.request.urlopen("http://localhost:8501/_stcore/health").status == 200 else sys.exit(1)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   caddy:
     image: caddy:2-alpine
     # The only service that publishes to the host. Caddy reverse-proxies to
@@ -75,6 +109,8 @@ services:
       - caddy_config:/config
     depends_on:
       fastapi:
+        condition: service_healthy
+      chat:
         condition: service_healthy
 
 volumes:
