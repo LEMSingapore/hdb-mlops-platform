@@ -96,8 +96,13 @@ jobs:
           sqlite3 mlflow.db \
             "SELECT alias, version FROM registered_model_aliases WHERE name='hdb-predictor';"
 
+      # Production compose no longer publishes fastapi's port to the host — Caddy
+      # is the only host-facing service there. The CI override re-publishes 8000
+      # so the smoke test can curl the container directly, and only mlflow and
+      # fastapi are started: Caddy is excluded because its ACME TLS challenge
+      # cannot complete against a hostname that does not resolve to the runner.
       - name: Start the compose stack
-        run: docker compose up -d
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mlflow fastapi
 
       # Both services declare healthchecks; FastAPI's only passes once the
       # champion has loaded, so waiting on it implicitly confirms the model load.

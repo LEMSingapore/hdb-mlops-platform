@@ -1,0 +1,12 @@
+hdb-mlops.duckdns.org {
+	reverse_proxy fastapi:8000
+
+	encode gzip
+
+	# Per-IP rate limiting is intentionally absent. Caddy's rate_limit directive
+	# lives in a separate module that is not compiled into the stock caddy:2-alpine
+	# image; enabling it would require a custom Caddy build (xcaddy). For this MVP
+	# the stock image stays unmodified, and rate limiting is a documented
+	# follow-up. FastAPI carries no LLM cost exposure, so the only exposure here
+	# is CPU, not spend.
+}

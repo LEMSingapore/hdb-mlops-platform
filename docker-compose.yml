@@ -1,8 +1,8 @@
 services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.13.0
-    ports:
-      - "5000:5000"
+    # No host port mapping: MLflow is internal to the compose network. Caddy is
+    # the only host-facing service, and FastAPI reaches MLflow as http://mlflow:5000.
     # MLflow 3 rejects requests whose Host header is not on its DNS-rebinding
     # allowlist, which defaults to localhost only. FastAPI reaches the server as
     # http://mlflow:5000, so the service name must be allowlisted explicitly.
@@ -36,8 +36,10 @@ services:
 
   fastapi:
     build: .
-    ports:
-      - "8000:8000"
+    # No host port mapping: FastAPI is reached only through Caddy over the compose
+    # network as http://fastapi:8000. Publishing it to the host would bypass ufw
+    # (Docker writes its own iptables rules), leaving only the cloud firewall in
+    # front of the port. Caddy terminates TLS and is the sole public surface.
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
     depends_on:
@@ -54,3 +56,27 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    # The only service that publishes to the host. Caddy reverse-proxies to
+    # fastapi over the compose network and provisions Let's Encrypt TLS for the
+    # public hostname via the HTTP-01 challenge, which needs ports 80 and 443
+    # reachable from the internet.
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes persist the issued certificates and Caddy's state across
+      # restarts. Without them every restart re-runs ACME and risks hitting
+      # Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      fastapi:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

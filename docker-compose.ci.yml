@@ -1,0 +1,14 @@
+# CI-only override for the compose smoke test.
+#
+# Production compose (docker-compose.yml) publishes no host port on fastapi:
+# Caddy is the only host-facing service and reaches fastapi over the compose
+# network. The CI smoke test, however, curls the FastAPI container directly from
+# the runner host, so it re-publishes port 8000 here.
+#
+# CI also brings up only the mlflow and fastapi services (see ci.yml), never
+# Caddy, so no ACME TLS provisioning is attempted against a hostname that does
+# not resolve to the runner.
+services:
+  fastapi:
+    ports:
+      - "8000:8000"
